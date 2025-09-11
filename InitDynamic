@@ -1,352 +1,358 @@
 <script>
 (() => {
-/* ------------ Config ------------ */
-const DEBUG = false;
-const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
+  /* ==============================
+   * Tempo "Task (from API)" helper
+   * Core v4 – stable build
+   * ============================== */
 
-const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
-const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
-const AC_FIELD     = "customfield_17447";
-const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
-const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
+  /* --------- Config --------- */
+  const ATTR = { id: 14, key: "_Picker_", label: "Task" };            // Tempo work attribute
+  const SR_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
+  const AC_FIELD = "customfield_17447";                                // Activity Code field
+  const EXEMPT_KEYS = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]); // no warning/blocks
+  const KTAXA_GROUP = "DM-KTAXA";                                      // bypass group
+  const WARNING_TEXT = 'Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.';
 
-/* ------------ State ------------ */
-const S = {
-  formOpen:false,
-  currentIssueKey:null,
-  lastKeySig:null,
-  userPicking:false,
-  savingUntil:0,
-  cache:Object.create(null),
-  pendingFetch:Object.create(null),
-  acCache:Object.create(null),
-  acPending:Object.create(null),
-  btnObserver:null,
-  keyObserver:null,
-  btnInterval:null,
-  lastEnforceAt:0,
-  lastGateSig:null,
-  lastBtnDisabled:null,
-};
+  /* --------- State --------- */
+  let BYPASS_FOR_KTAXA = false;                                        // skip all custom logic if true
+  const optionsCache = new Map();                                      // issueKey -> [{key,value}]
+  const acCache = new Map();                                           // issueKey -> boolean
+  let lastSelectedValue = "";                                          // current select value we will inject
+  let wiredFormId = null;                                              // to prevent double-wiring
 
-/* ------------ Helpers ------------ */
-const now = () => Date.now();
-const debounce = (fn, ms) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
-const throttle = (fn, ms) => { let l=0; return (...a)=>{ const n=now(); if (n-l>=ms){ l=n; fn(...a); } }; };
-const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
+  const log = (...a) => console.log("[WorkAttr]", ...a);
+  const warn = (...a) => console.warn("[WorkAttr]", ...a);
 
-const getForm = ()=> document.querySelector("#worklogForm");
+  /* --------- Utilities --------- */
 
-/* ---- robust issue key scraping ---- */
-function findIssuePickerRoot(form){
-  // Try common wrappers near the top of the dialog
-  return form.querySelector('[aria-haspopup][aria-expanded]')                                      // react-select button
-      || form.querySelector('[role="combobox"]')                                                   // generic combobox
-      || form.querySelector('[data-test*="issue"], [data-testid*="issue"]')                        // data-test ids
-      || form.querySelector('header + *')                                                          // the first block after header
-      || form;                                                                                     // fallback (safe but noisier)
-}
-function extractKeyFromNode(root){
-  const RE = /[A-Z][A-Z0-9]+-\d+/;
-  // 1) direct text on the root
-  const t0 = (root.textContent || "").trim();
-  let m = RE.exec(t0);
-  if (m) return m[0].toUpperCase();
-
-  // 2) scan shallow descendants first (fast)
-  const kids = [...root.querySelectorAll(":scope > *")];
-  for (const el of kids){
-    const txt = (el.textContent || "").trim();
-    m = RE.exec(txt);
-    if (m) return m[0].toUpperCase();
+  // Robustly locate the current worklog form (create or edit)
+  function getForm() {
+    return document.querySelector("#worklogForm") || null;
   }
 
-  // 3) broader scan with early stop (still bounded)
-  const nodes = [...root.querySelectorAll("*")].slice(0, 200); // cap to avoid heavy reflow
-  for (const el of nodes){
-    if (!el.firstElementChild && el.textContent){
-      m = RE.exec(el.textContent);
-      if (m) return m[0].toUpperCase();
-    }
+  // Prefer the issue picker input as anchor
+  function findIssuePickerRoot(form) {
+    return form.querySelector("#issuePickerInput")
+        || form.querySelector('[aria-haspopup][aria-expanded]')
+        || form;
   }
-  return null;
-}
-function getIssueKeyFromForm(){
-  const f = getForm(); if (!f) return null;
-  const root = findIssuePickerRoot(f);
-  return extractKeyFromNode(root);
-}
 
-/* ---- submit button control ---- */
-function findSubmitButtons(){
-  const f = getForm(); if (!f) return [];
-  let btns = [...f.querySelectorAll('button[name="submitWorklogButton"]')];
-  if (btns.length) return btns;
-  btns = [...f.querySelectorAll("button")].filter(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
-  if (btns.length) return btns;
-  const guess = f.querySelector('button[type="button"]');
-  return guess ? [guess] : [];
-}
-function setSubmitDisabled(disabled){
-  if (S.lastBtnDisabled === !!disabled) return;
-  S.lastBtnDisabled = !!disabled;
-  const btns = findSubmitButtons();
-  btns.forEach(btn => {
-    const d = !!disabled;
-    if (btn.disabled !== d) btn.disabled = d;
-    if (d) btn.setAttribute("disabled",""); else btn.removeAttribute("disabled");
-    btn.setAttribute("aria-disabled", d ? "true" : "false");
-    btn.setAttribute("data-state", d ? "not-active" : "active");
-    btn.style.pointerEvents = d ? "none" : "";
-    btn.classList.toggle("workattr--blocked", d);
-    btn.tabIndex = d ? -1 : 0;
-  });
-}
+  // Find the native Task row and container
+  function findNativeTaskRow(form) {
+    const label = form.querySelector('label[for="_Picker_"]')
+              || [...form.querySelectorAll("#worklogForm label")]
+                   .find(l => /^\s*Task\s*$/i.test(l.textContent || ""));
+    if (!label) return null;
+    return label.closest(".sc-bKhNmF") || label.closest("div");
+  }
 
-/* ---- hide native Task & inject our custom one ---- */
-function findNativeTaskRow(){
-  const f = getForm(); if (!f) return null;
-  const label = f.querySelector('label[for="_Picker_"]')
-            || [...f.querySelectorAll("label")].find(l => /\bTask\b/i.test(l.textContent||""));
-  if (!label) return null;
-  return label.closest("div")?.parentElement || label.closest("div");
-}
-function hideNativeTask(){
-  const row = findNativeTaskRow();
-  if (row && !row.classList.contains("workattr-hide-native")) row.classList.add("workattr-hide-native");
-}
-function ensureCustomField(){
-  const f = getForm(); if (!f) return null;
-  let host = f.querySelector("#custom-workattr-host");
-  if (!host){
+  // Create/ensure our custom field right under the native row
+  function ensureCustomField(form) {
+    let host = form.querySelector("#custom-workattr-host");
+    if (host) return host;
+
     host = document.createElement("div");
     host.id = "custom-workattr-host";
-    const ref = findNativeTaskRow();
-    if (ref && ref.parentElement) ref.parentElement.insertBefore(host, ref);
-    else f.appendChild(host);
+    host.className = "sc-bKhNmF LBFFT";
+    host.setAttribute("type","default");
     host.innerHTML = `
-      <label style="display:block;margin-bottom:4px;">Task (from API)</label>
-      <select id="custom-workattr-select" style="width:100%;height:32px;">
-        <option value="">Select an option...</option>
-      </select>
-      <div id="custom-workattr-warning" style="display:none;color:#d92929;margin-top:6px;font-size:12px;"></div>
-    `;
-    const sel = host.querySelector("#custom-workattr-select");
-    const arm = ()=>{ S.userPicking = true; setTimeout(()=>S.userPicking=false, 800); };
-    ["mousedown","focus","click"].forEach(e => sel.addEventListener(e, arm, true));
-    sel.addEventListener("change", ()=>{
-      window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
-      enforceSoon();
+      <div class="sc-cgFpzT eGniAY">
+        <label class="sc-jvLaUc lauuLP" id="custom-workattr-label">${ATTR.label} (from API)</label>
+      </div>
+      <div class="sc-jDDxOa geIDWX">
+        <select id="custom-workattr-select" class="sc-cTQhss gwKKdf" style="width:100%">
+          <option value="">Select an option...</option>
+        </select>
+        <div id="custom-workattr-help" style="display:none; color:#c0392b; margin-top:6px;"></div>
+      </div>`;
+
+    const nativeRow = findNativeTaskRow(form);
+    if (nativeRow && nativeRow.parentElement) {
+      nativeRow.parentElement.insertBefore(host, nativeRow.nextSibling);
+    } else {
+      form.appendChild(host);
+    }
+    return host;
+  }
+
+  function showNativeTask(form, show) {
+    const row = findNativeTaskRow(form);
+    if (row) row.style.display = show ? "" : "none";
+  }
+
+  function removeCustomField(form) {
+    const host = form.querySelector("#custom-workattr-host");
+    if (host && host.parentElement) host.parentElement.removeChild(host);
+  }
+
+  // Read selected work issue key from the dialog, robust to both open/closed pickers
+  function getIssueKeyFromForm() {
+    const f = getForm(); if (!f) return null;
+    const RE = /[A-Z][A-Z0-9]+-\d+/;
+
+    // If the list is open and an active option exists
+    const inp = f.querySelector("#issuePickerInput");
+    if (inp) {
+      const activeId = inp.getAttribute("aria-activedescendant");
+      if (activeId) {
+        const opt = document.getElementById(activeId);
+        if (opt) {
+          const m = (opt.textContent || "").match(RE);
+          if (m) return m[0].toUpperCase();
+        }
+      }
+      // Closed/summary trigger text
+      const trigger =
+        inp.closest("#worklogForm")?.querySelector('[aria-haspopup="listbox"], [aria-haspopup="dialog"]')
+        || inp.closest("#worklogForm")?.querySelector('[data-testid*="issue"], [data-test*="issue"]');
+      if (trigger) {
+        const m = (trigger.textContent || "").match(RE);
+        if (m) return m[0].toUpperCase();
+      }
+    }
+
+    // Current selected row if listbox is open
+    const selected = f.querySelector('[aria-selected="true"]');
+    if (selected) {
+      const m = (selected.textContent || "").match(RE);
+      if (m) return m[0].toUpperCase();
+    }
+
+    // Fallback: scan once
+    const m = (f.textContent || "").match(RE);
+    return m ? m[0].toUpperCase() : null;
+  }
+
+  // JSONP utility (SR endpoint returns JSONP)
+  function jsonp(url, params={}) {
+    return new Promise((resolve, reject) => {
+      const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
+      params.callback = cb;
+      const q = new URLSearchParams(params).toString();
+      const src = url + (url.includes("?") ? "&" : "?") + q;
+
+      const script = document.createElement("script");
+      script.src = src;
+      let done = false;
+      window[cb] = (data) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(data);
+      };
+      script.onerror = (e) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(e);
+      };
+      function cleanup() {
+        try { delete window[cb]; } catch(_){}
+        script.remove();
+      }
+      document.body.appendChild(script);
     });
   }
-  return host;
-}
-const getCustomSelect = ()=> getForm()?.querySelector("#custom-workattr-select") || null;
-const getWarningEl    = ()=> getForm()?.querySelector("#custom-workattr-warning") || null;
 
-function fillOptions(values){
-  ensureCustomField();
-  const sel = getCustomSelect(); if (!sel) return;
-  const prev = sel.value;
-  const sig  = JSON.stringify(values?.map(v=>v.value) || []);
-  if (sel.dataset.sig === sig) return;
-  sel.dataset.sig = sig;
-  sel.innerHTML = `<option value="">Select an option...</option>`;
-  (values||[]).forEach(({value})=>{
-    const o = document.createElement("option"); o.value = value; o.textContent = value; sel.appendChild(o);
-  });
-  if (prev && [...sel.options].some(o=>o.value===prev)) sel.value = prev; else sel.value = "";
-  window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
-}
-
-/* ---- data fetch (deduped) ---- */
-function jsonpFetch(issueKey, timeoutMs=8000){
-  if (S.pendingFetch[issueKey]) return S.pendingFetch[issueKey];
-  const p = new Promise((resolve)=>{
-    const cb = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
-    const sc = document.createElement("script"); let done=false;
-    const cleanup = ()=>{ if (done) return; done=true; try{ delete window[cb]; }catch{} try{ sc.remove(); }catch{} };
-    const timer = setTimeout(()=>{ cleanup(); resolve({values:[]}); }, timeoutMs);
-    window[cb] = (data)=>{ clearTimeout(timer); cleanup(); resolve(data||{values:[]}); };
-    sc.onerror=()=>{ clearTimeout(timer); cleanup(); resolve({values:[]}); };
-    sc.src = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
-    document.body.appendChild(sc);
-  }).then(data=>{
-    S.cache[issueKey] = Array.isArray(data?.values) ? data.values : [];
-    delete S.pendingFetch[issueKey];
-    LOG("options loaded", issueKey, S.cache[issueKey].length);
-    return S.cache[issueKey];
-  });
-  S.pendingFetch[issueKey] = p;
-  return p;
-}
-function getActivityStatus(issueKey){
-  if (issueKey in S.acCache) return Promise.resolve(!!S.acCache[issueKey]);
-  if (S.acPending[issueKey]) return S.acPending[issueKey];
-  const url = `/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`;
-  const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(), 7000);
-  const p = fetch(url,{signal:ctrl.signal})
-    .then(r=>r.ok?r.json():null)
-    .then(j=>{ clearTimeout(t); const v=j?.fields?.[AC_FIELD]; const has=!!(v && String(v).trim()); S.acCache[issueKey]=has; return has; })
-    .catch(()=>{ clearTimeout(t); S.acCache[issueKey]=false; return false; })
-    .finally(()=>{ delete S.acPending[issueKey]; });
-  S.acPending[issueKey]=p; return p;
-}
-async function loadForIssue(issueKey){
-  if (!issueKey) return;
-  if (!S.cache[issueKey]) await jsonpFetch(issueKey);
-  fillOptions(S.cache[issueKey]||[]);
-}
-
-/* ---- gating ---- */
-async function computeGate(){
-  const key = S.currentIssueKey || getIssueKeyFromForm();
-  const sel = getCustomSelect();
-  const hasTask = !!(sel && sel.value);
-  let warn=false, hasAC=true, exempt=false;
-  if (hasDMPrefix(key)){
-    exempt = EXEMPT_ISSUES.has(key);
-    if (!exempt){ hasAC = await getActivityStatus(key); warn = !hasAC; }
+  // Fetch Task options for an issue
+  async function fetchOptions(issueKey) {
+    if (optionsCache.has(issueKey)) return optionsCache.get(issueKey);
+    const data = await jsonp(SR_ENDPOINT, { issueKey });
+    const values = Array.isArray(data?.values) ? data.values : [];
+    optionsCache.set(issueKey, values);
+    return values;
   }
-  const block = warn || !hasTask;
-  return { key, hasTask, hasAC, exempt, block, warn };
-}
-function startButtonInterval(){
-  if (S.btnInterval) return;
-  S.btnInterval = setInterval(()=>{
-    if (!getForm() || !window._workattr_gate_block){ stopButtonInterval(); return; }
-    setSubmitDisabled(true);
-  }, 1000);
-}
-function stopButtonInterval(){ if (S.btnInterval){ clearInterval(S.btnInterval); S.btnInterval=null; } }
 
-const enforce = async () => {
-  const f = getForm(); if (!f) return;
-  if (now()-S.lastEnforceAt < 250) return; // quicker but still bounded
-  S.lastEnforceAt = now();
-
-  const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
-  const sig = `${key}|${warn?'W':'_'}|${hasTask?'T':'_'}|${block?'B':'_'}`;
-  if (S.lastGateSig !== sig){ LOG("gate", { key, hasAC, exempt, hasTask, block }); S.lastGateSig = sig; }
-
-  const w = getWarningEl();
-  if (w){ if (warn){ w.textContent = WARNING_TEXT; w.style.display="block"; } else { w.textContent=""; w.style.display="none"; } }
-
-  window._workattr_gate_block = !!block;
-  setSubmitDisabled(block);
-  if (block){ startButtonInterval(); startButtonObserver(); }
-  else { stopButtonInterval(); }
-};
-const enforceSoon = debounce(enforce, 120);
-
-/* ---- observers ---- */
-function startKeyObserver(){
-  const f = getForm(); if (!f) return;
-  const root = findIssuePickerRoot(f);
-  if (S.keyObserver){ try{S.keyObserver.disconnect();}catch{} S.keyObserver=null; }
-  const obs = new MutationObserver(throttle(()=>{
-    const key = getIssueKeyFromForm();
-    const sig = key || "none";
-    if (sig !== S.lastKeySig){
-      S.lastKeySig = sig;
-      if (key && key !== S.currentIssueKey && !S.userPicking && now() >= S.savingUntil){
-        S.currentIssueKey = key;
-        loadForIssue(key);
-        enforceSoon();
-      }
-    }
-  }, 150));
-  obs.observe(root, { subtree:true, childList:true, characterData:true });
-  S.keyObserver = obs;
-}
-function startButtonObserver(){
-  const btns = findSubmitButtons(); if (!btns.length) return;
-  if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-  const obs = new MutationObserver(()=>{
-    if (window._workattr_gate_block) setSubmitDisabled(true);
-  });
-  btns.forEach(b => obs.observe(b, { attributes:true, attributeFilter:["disabled","data-state","class"] }));
-  S.btnObserver = obs;
-}
-
-/* ---- lifecycle ---- */
-function initForm(){
-  hideNativeTask();
-  ensureCustomField();
-  S.lastGateSig = null;
-  S.lastBtnDisabled = null;
-  S.savingUntil = 0;
-  S.userPicking = false;
-
-  const k = getIssueKeyFromForm();
-  if (k){ S.currentIssueKey = k; loadForIssue(k); }
-  startKeyObserver();
-  startButtonObserver();
-  enforceSoon();
-}
-
-/* ---- global block guards ---- */
-function blockEventIfNeeded(ev){
-  if (!window._workattr_gate_block) return;
-  ev.preventDefault(); ev.stopPropagation();
-  const b = findSubmitButtons()[0]; if (b) b.blur();
-}
-["click","pointerdown"].forEach(evt=>{
-  document.addEventListener(evt,(ev)=>{
-    const btns = findSubmitButtons();
-    if (btns.some(b => b.contains(ev.target))) blockEventIfNeeded(ev);
-  }, true);
-});
-document.addEventListener("keydown",(ev)=>{
-  if (ev.key === "Enter" && getForm()) blockEventIfNeeded(ev);
-}, true);
-
-/* ---- open/close watcher ---- */
-setInterval(()=>{
-  const open = !!getForm();
-  if (open !== S.formOpen){
-    S.formOpen = open;
-    if (open) { initForm(); }
-    else {
-      S.currentIssueKey = null;
-      if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-      if (S.keyObserver){ try{S.keyObserver.disconnect();}catch{} S.keyObserver=null; }
-      stopButtonInterval();
+  // Lookup Activity Code presence
+  async function fetchHasAC(issueKey) {
+    if (acCache.has(issueKey)) return acCache.get(issueKey);
+    try {
+      const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`, { credentials: "same-origin" });
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      const v = j?.fields?.[AC_FIELD];
+      const has = !!(Array.isArray(v) ? v.length : v);
+      acCache.set(issueKey, has);
+      return has;
+    } catch (e) {
+      warn("AC lookup failed for", issueKey, e);
+      // Fail open to avoid blocking valid logs
+      acCache.set(issueKey, true);
+      return true;
     }
   }
-}, 700);
 
-/* ---- inject attr & block POST ---- */
-const _fetch = window.fetch;
-window.fetch = function(url, opts, ...rest){
-  try{
-    if (typeof url === "string" && url.includes("/rest/tempo-timesheets/4/worklogs/") && opts && typeof opts.body === "string"){
-      if (window._workattr_gate_block){
-        LOG("blocked POST while gate active");
-        return Promise.resolve(new Response(JSON.stringify({blocked:true}), {status:400, headers:{"Content-Type":"application/json"}}));
-      }
-      const chosen = window._tempoSelectedWorkAttr && window._tempoSelectedWorkAttr[TEMPO_ATTR.key];
-      if (chosen){
-        const b = JSON.parse(opts.body || "{}");
-        b.attributes = b.attributes || {};
-        b.attributes[TEMPO_ATTR.id] = chosen;
-        opts.body = JSON.stringify(b);
-        LOG("injected attr into POST", b.attributes);
-      }
+  // Decide whether to block logging (disable button) and/or show warning
+  async function computeGate(issueKey, hasTask) {
+    const isDM = /^DM-\d+$/i.test(issueKey || "");
+    const exempt = EXEMPT_KEYS.has((issueKey || "").toUpperCase());
+    let hasAC = true;
+    if (isDM && !exempt) {
+      hasAC = await fetchHasAC(issueKey);
     }
-  }catch(e){}
-  return _fetch.apply(this, [url, opts, ...rest]);
-};
+    const block = isDM && !exempt && !hasAC;
+    log("gate", { key: issueKey || null, hasAC, exempt, hasTask: !!hasTask, block });
+    return { block, hasAC, exempt };
+  }
 
-/* ---- styles ---- */
-const css = document.createElement("style");
-css.textContent = `
-  .workattr-hide-native{display:none!important}
-  #custom-workattr-host{margin-top:8px}
-  button.workattr--blocked{opacity:.55;pointer-events:none}
-`;
-document.head.appendChild(css);
+  function setSubmitDisabled(disabled) {
+    const f = getForm(); if (!f) return;
+    const btn = f.querySelector('[name="submitWorklogButton"]')
+             || f.querySelector('button[type="button"][name="submitWorklogButton"]');
+    if (!btn) return;
+    btn.disabled = !!disabled;
+    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
+  }
 
-LOG("Banner v3.9.5 key-detect loaded");
+  function showWarning(show, text = WARNING_TEXT) {
+    const f = getForm(); if (!f) return;
+    const help = f.querySelector("#custom-workattr-help");
+    if (!help) return;
+    help.textContent = show ? text : "";
+    help.style.display = show ? "" : "none";
+  }
+
+  function clearSelect(select) {
+    select.innerHTML = '<option value="">Select an option...</option>';
+  }
+
+  function populateSelect(select, values) {
+    clearSelect(select);
+    if (!values || !values.length) return;
+    for (const v of values) {
+      const opt = document.createElement("option");
+      opt.value = v.value;
+      opt.textContent = v.value;
+      select.appendChild(opt);
+    }
+  }
+
+  /* --------- Intercept XHR to inject our attribute --------- */
+  (function patchXHR(){
+    const _open = XMLHttpRequest.prototype.open;
+    const _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url){
+      this.__tempo_url = url || "";
+      this.__tempo_method = method || "";
+      return _open.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function(body){
+      try {
+        if (this.__tempo_method === "POST" && /\/rest\/tempo-timesheets\/\d+\/worklogs\/?$/i.test(this.__tempo_url || "")) {
+          if (typeof body === "string" && body.trim().startsWith("{")) {
+            const payload = JSON.parse(body);
+            if (!payload.attributes) payload.attributes = {};
+            if (lastSelectedValue) {
+              payload.attributes[ATTR.key] = lastSelectedValue;
+              log("✅ Injected into XHR POST", { [ATTR.key]: lastSelectedValue });
+            }
+            body = JSON.stringify(payload);
+          }
+        }
+      } catch (e) {
+        warn("inject error", e);
+      }
+      return _send.call(this, body);
+    };
+  })();
+
+  /* --------- Group bypass (KTAXA) --------- */
+  (async function detectKTAXA(){
+    try {
+      const r = await fetch("/rest/api/2/myself?expand=groups", { credentials: "same-origin" });
+      if (r.ok) {
+        const j = await r.json();
+        const items = j?.groups?.items || [];
+        BYPASS_FOR_KTAXA = items.some(g => (g.name || "") === KTAXA_GROUP);
+        if (BYPASS_FOR_KTAXA) log("bypass enabled for group", KTAXA_GROUP);
+      }
+    } catch (e) {
+      // ignore
+    }
+  })();
+
+  /* --------- Main form wiring --------- */
+  async function loadForCurrentForm() {
+    const form = getForm();
+    if (!form) return;
+
+    const formId = form.getAttribute("data-worklog-id") || "create";
+    if (wiredFormId === formId && form.__workattrWired) return; // already wired
+    form.__workattrWired = true;
+    wiredFormId = formId;
+
+    // If user is in KTAXA, keep native behavior and bail
+    if (BYPASS_FOR_KTAXA) {
+      showNativeTask(form, true);
+      removeCustomField(form);
+      return;
+    }
+
+    // Prepare UI
+    showNativeTask(form, false);
+    const host = ensureCustomField(form);
+    const select = host.querySelector("#custom-workattr-select");
+
+    // Reset state
+    lastSelectedValue = "";
+    clearSelect(select);
+    showWarning(false);
+    setSubmitDisabled(false);
+
+    // When the issue changes, re-fetch options and recompute gate
+    const onIssueChanged = debounce(async () => {
+      const key = getIssueKeyFromForm();
+      if (!key) { clearSelect(select); showWarning(false); setSubmitDisabled(false); return; }
+
+      log("▶ Fetching options for", key);
+      const values = await fetchOptions(key);
+      log("JSONP callback", values);
+      populateSelect(select, values);
+
+      // Recompute gate (Activity Code + exemptions)
+      const gate = await computeGate(key, !!select.value);
+      showWarning(gate.block);
+      setSubmitDisabled(gate.block);
+    }, 120);
+
+    // Change handlers
+    select.addEventListener("change", async () => {
+      lastSelectedValue = select.value || "";
+      const key = getIssueKeyFromForm();
+      const gate = await computeGate(key, !!lastSelectedValue);
+      showWarning(gate.block);
+      setSubmitDisabled(gate.block);
+    });
+
+    // Observe/attach to issue picker changes
+    const root = findIssuePickerRoot(form);
+    if (root) {
+      ["input","change","keydown","keyup","click"].forEach(ev =>
+        root.addEventListener(ev, onIssueChanged, { passive: true }));
+    }
+
+    // Also watch the form for structural changes (Log another, reopen, etc.)
+    const mo = new MutationObserver(onIssueChanged);
+    mo.observe(form, { subtree: true, childList: true, attributes: true, characterData: false });
+
+    // First paint
+    onIssueChanged();
+  }
+
+  // Simple debounce
+  function debounce(fn, wait) {
+    let t; return function(...a){ clearTimeout(t); t = setTimeout(() => fn.apply(this, a), wait); };
+  }
+
+  /* --------- Global observer: (re)wire when the dialog appears --------- */
+  const rootMO = new MutationObserver(() => {
+    const form = getForm();
+    if (form) loadForCurrentForm();
+  });
+  rootMO.observe(document.body, { childList: true, subtree: true });
+
+  // If the dialog is already open on load
+  if (getForm()) loadForCurrentForm();
+
 })();
 </script>
