@@ -3,10 +3,10 @@
   const LOG = (...a) => console.log("[WorkAttr]", ...a);
 
   /* ===== CONFIG ===== */
-  const TEMPO_ATTR = { id: 14, key: "_Picker_", label: "Task" };
-  const SR_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD = "customfield_17447";
-  const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]); // no AC warning
+  const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
+  const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
+  const AC_FIELD     = "customfield_17447";
+  const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
 
   /* ===== STATE ===== */
   const S = {
@@ -19,11 +19,12 @@
     acPending:Object.create(null), // issueKey -> Promise<boolean>
     lastBlock:null,
     btnObserver:null,
+    dialogObserver:null,
   };
 
   /* ===== UTILS ===== */
   const now = () => Date.now();
-  const debounce = (fn,ms=200)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);}};
+  const debounce = (fn,ms=150)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);}};
 
   const getForm = () => document.querySelector("#worklogForm");
   const getIssueKeyFromForm = () => {
@@ -33,19 +34,27 @@
   };
   const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
 
-  const getSubmitBtn = () => {
-    const f=getForm(); if(!f) return null;
-    return f.querySelector('button[name="submitWorklogButton"]')
-        || [...f.querySelectorAll('button')].find(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
-  };
-  const setSubmitDisabled = (disabled) => {
-    const btn = getSubmitBtn(); if(!btn) return;
-    btn.disabled = !!disabled;
-    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    btn.setAttribute("data-state", disabled ? "not-active" : "active");
-    btn.classList.toggle("workattr--blocked", !!disabled);
-  };
+  // --- buttons ---
+  function findSubmitButtons() {
+    const f=getForm(); if(!f) return [];
+    const byName = [...f.querySelectorAll('button[name="submitWorklogButton"]')];
+    if (byName.length) return byName;
+    const all = [...f.querySelectorAll('button')];
+    return all.filter(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
+  }
+  function setSubmitDisabled(disabled) {
+    const btns = findSubmitButtons(); if(!btns.length) return;
+    btns.forEach(btn => {
+      btn.disabled = !!disabled;
+      btn.setAttribute("aria-disabled", disabled ? "true" : "false");
+      btn.setAttribute("data-state", disabled ? "not-active" : "active");
+      btn.classList.toggle("workattr--blocked", !!disabled);
+      // ensure tabindex doesn’t allow Enter
+      btn.tabIndex = disabled ? -1 : 0;
+    });
+  }
 
+  // --- native task row ---
   function findNativeTaskRow(){
     const f = getForm(); if (!f) return null;
     const label = f.querySelector('label[for="_Picker_"]')
@@ -58,6 +67,7 @@
     if (row && !row.classList.contains("workattr-hide-native")) row.classList.add("workattr-hide-native");
   }
 
+  // --- custom select ---
   function ensureCustomField(){
     const f=getForm(); if(!f) return null;
     let host=f.querySelector("#custom-workattr-host");
@@ -102,6 +112,7 @@
     }
   }
 
+  // --- data ---
   function jsonpFetch(issueKey, timeoutMs=8000){
     return new Promise((resolve)=>{
       const cb=`tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
@@ -156,13 +167,21 @@
     return {block,warn,hasTask};
   }
 
+  function startDialogObserver(){
+    const form=getForm(); if (!form) return;
+    if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
+    const obs=new MutationObserver(()=>{ enforce(); });
+    obs.observe(form,{subtree:true, childList:true, attributes:true});
+    S.dialogObserver=obs;
+  }
+
   function startButtonObserver(){
-    const btn=getSubmitBtn(); if (!btn) return;
+    const btns=findSubmitButtons(); if (!btns.length) return;
     if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
     const obs=new MutationObserver(()=>{
       if (window._workattr_gate_block) setSubmitDisabled(true);
     });
-    obs.observe(btn,{attributes:true,attributeFilter:["disabled","data-state","class"]});
+    btns.forEach(btn=>obs.observe(btn,{attributes:true,attributeFilter:["disabled","data-state","class"]}));
     S.btnObserver=obs;
   }
 
@@ -177,21 +196,28 @@
       setSubmitDisabled(block);
       startButtonObserver();
     } else {
-      // nudge every pass
-      setSubmitDisabled(block);
+      setSubmitDisabled(block); // nudge each pass
     }
   }
 
-  // Click + Enter key guard
-  document.addEventListener("click",(ev)=>{
-    const btn=getSubmitBtn(); if(!btn) return;
-    if (btn.contains(ev.target) && window._workattr_gate_block){ ev.preventDefault(); ev.stopPropagation(); btn.blur(); }
-    else if (btn.contains(ev.target)){ S.savingUntil = now()+4000; }
-  }, true);
+  // --- hard guards ---
+  function blockEventIfNeeded(ev){
+    if (!window._workattr_gate_block) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const btn = findSubmitButtons()[0];
+    if (btn) btn.blur();
+  }
+  ["click","pointerdown"].forEach(evt=>{
+    document.addEventListener(evt,(ev)=>{
+      const btns=findSubmitButtons();
+      if (btns.some(b=>b.contains(ev.target))) blockEventIfNeeded(ev);
+    }, true);
+  });
   document.addEventListener("keydown",(ev)=>{
-    if (ev.key==="Enter" && getForm() && window._workattr_gate_block){ ev.preventDefault(); ev.stopPropagation(); }
+    if (ev.key==="Enter" && getForm()){ blockEventIfNeeded(ev); }
   }, true);
 
+  // --- lifecycle ---
   function initForm(){
     hideNativeTask();
     ensureCustomField();
@@ -199,16 +225,21 @@
     S.savingUntil=0; S.userPicking=false;
     const k=getIssueKeyFromForm();
     if (k && k!==S.currentIssueKey){ S.currentIssueKey=k; loadForIssue(k); }
-    enforce();
+    startDialogObserver();
     startButtonObserver();
+    enforce();
   }
 
-  // Dialog lifecycle poller (simple & robust)
   setInterval(()=>{
     const open=!!getForm();
     if (open!==S.formOpen){
       S.formOpen=open;
-      if (open){ initForm(); } else { S.currentIssueKey=null; if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; } }
+      if (open){ initForm(); }
+      else {
+        S.currentIssueKey=null;
+        if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
+        if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
+      }
     } else if (open){
       const k=getIssueKeyFromForm();
       if (k && k!==S.currentIssueKey && now()>=S.savingUntil && !S.userPicking){ S.currentIssueKey=k; loadForIssue(k); }
@@ -216,11 +247,15 @@
     }
   }, 250);
 
-  // Inject chosen Task into Tempo POST body
+  // --- Inject (and last-resort block) on POST ---
   const _fetch=window.fetch;
   window.fetch=function(url,opts,...rest){
     try{
       if (typeof url==="string" && url.includes("/rest/tempo-timesheets/4/worklogs/") && opts && typeof opts.body==="string"){
+        if (window._workattr_gate_block){
+          LOG("🛑 Blocked POST while gate active");
+          return Promise.resolve(new Response(JSON.stringify({blocked:true}),{status:400,headers:{"Content-Type":"application/json"}}));
+        }
         const chosen = window._tempoSelectedWorkAttr && window._tempoSelectedWorkAttr[TEMPO_ATTR.key];
         if (chosen){
           const b=JSON.parse(opts.body||"{}");
@@ -234,15 +269,15 @@
     return _fetch.apply(this,[url,opts,...rest]);
   };
 
-  // Styles
+  // --- styles ---
   const css=document.createElement("style");
   css.textContent=`
     .workattr-hide-native{display:none!important}
     #custom-workattr-host{margin-top:8px}
-    button.workattr--blocked{opacity:.6;pointer-events:auto}
+    button.workattr--blocked{opacity:.55; pointer-events:none}
   `;
   document.head.appendChild(css);
 
-  LOG("Banner v3.5 – strong disable + observer + diagnostics loaded");
+  LOG("Banner v3.6 – stubborn disable + dialog observer + hard guards loaded");
 })();
 </script>
