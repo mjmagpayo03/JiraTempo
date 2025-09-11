@@ -147,7 +147,7 @@
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
+  const EXEMPT_ISSUES  = new Set(["DM-50267"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
 
