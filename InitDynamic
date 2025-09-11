@@ -7,6 +7,7 @@
   const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
   const AC_FIELD     = "customfield_17447";
   const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
+  const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
 
   /* ===== STATE ===== */
   const S = {
@@ -29,8 +30,11 @@
   const getForm = () => document.querySelector("#worklogForm");
   const getIssueKeyFromForm = () => {
     const f=getForm(); if(!f) return null;
-    const m=(f.textContent||"").match(/[A-Z][A-Z0-9]+-\d+/);
-    return m?m[0].toUpperCase():null;
+    // Prefer the header chip if present
+    const head = f.querySelector('h2, [data-testid*="issue"]')?.textContent || "";
+    const src = head + " " + (f.textContent||"");
+    const m = src.match(/[A-Z][A-Z0-9]+-\d+/);
+    return m ? m[0].toUpperCase() : null;
   };
   const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
 
@@ -49,7 +53,6 @@
       btn.setAttribute("aria-disabled", disabled ? "true" : "false");
       btn.setAttribute("data-state", disabled ? "not-active" : "active");
       btn.classList.toggle("workattr--blocked", !!disabled);
-      // ensure tabindex doesn’t allow Enter
       btn.tabIndex = disabled ? -1 : 0;
     });
   }
@@ -189,14 +192,22 @@
     const form=getForm(); if(!form) return;
     const {block,warn}=await computeGate();
     const w=getWarningEl();
-    if (w) w.style.display = warn ? "block" : "none";
+    if (w){
+      if (warn){
+        w.textContent = WARNING_TEXT;  // <<< put message back
+        w.style.display = "block";
+      } else {
+        w.textContent = "";
+        w.style.display = "none";
+      }
+    }
     window._workattr_gate_block = !!block;
     if (S.lastBlock !== block){
       S.lastBlock = block;
       setSubmitDisabled(block);
       startButtonObserver();
     } else {
-      setSubmitDisabled(block); // nudge each pass
+      setSubmitDisabled(block);
     }
   }
 
@@ -247,7 +258,7 @@
     }
   }, 250);
 
-  // --- Inject (and last-resort block) on POST ---
+  // Intercept POST (final safety net)
   const _fetch=window.fetch;
   window.fetch=function(url,opts,...rest){
     try{
@@ -278,6 +289,6 @@
   `;
   document.head.appendChild(css);
 
-  LOG("Banner v3.6 – stubborn disable + dialog observer + hard guards loaded");
+  LOG("Banner v3.7 – warning text restored + stubborn disable");
 })();
 </script>
