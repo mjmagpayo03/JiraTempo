@@ -1,330 +1,303 @@
 <script>
 (() => {
-  /* ------------ Config ------------ */
-  const DEBUG = false;                         // flip to true for verbose console logs
-  const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
+/* ------------ Config ------------ */
+const DEBUG = false;                         // set true for verbose logs
+const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
 
-  const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
-  const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD     = "customfield_17447";
-  const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
-  const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
+const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
+const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
+const AC_FIELD     = "customfield_17447";    // Activity Code
+const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
+const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
 
-  /* ------------ State ------------ */
-  const S = {
-    formOpen:false,
-    currentIssueKey:null,
-    userPicking:false,
-    savingUntil:0,
-    cache:Object.create(null),           // issueKey -> [{key,value}]
-    pendingFetch:Object.create(null),    // issueKey -> Promise
-    acCache:Object.create(null),         // issueKey -> boolean
-    acPending:Object.create(null),       // issueKey -> Promise<boolean>
-    lastGateSig:null,
-    lastEnforceAt:0,
-    btnObserver:null,
-    dialogObserver:null,
-  };
+/* ------------ State ------------ */
+const S = {
+  formOpen:false,
+  currentIssueKey:null,
+  userPicking:false,
+  savingUntil:0,
+  cache:Object.create(null),           // issueKey -> [{key,value}]
+  pendingFetch:Object.create(null),    // issueKey -> Promise
+  acCache:Object.create(null),         // issueKey -> boolean
+  acPending:Object.create(null),       // issueKey -> Promise<boolean>
+  lastGateSig:null,
+  lastEnforceAt:0,
+  btnObserver:null,
+  dialogObserver:null,
+  btnInterval:null,                    // sticky disable loop
+};
 
-  /* ------------ Helpers ------------ */
-  const now = () => Date.now();
-  const throttle = (fn, ms) => {
-    let t = 0;
-    return (...a) => { if (now() - t >= ms) { t = now(); fn(...a); } };
-  };
+/* ------------ Helpers ------------ */
+const now = () => Date.now();
+const throttle = (fn, ms) => { let t=0; return (...a)=>{ if (now()-t>=ms){ t=now; fn(...a);} }; };
 
-  const getForm = () => document.querySelector("#worklogForm");
-  const getIssueKeyFromForm = () => {
-    const f = getForm(); if (!f) return null;
-    const header = f.querySelector("h2, [data-testid*='issue']")?.textContent || "";
-    const all = header + " " + (f.textContent || "");
-    const m = all.match(/[A-Z][A-Z0-9]+-\d+/);
-    return m ? m[0].toUpperCase() : null;
-  };
-  const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
+const getForm = ()=> document.querySelector("#worklogForm");
+const getIssueKeyFromForm = () => {
+  const f = getForm(); if (!f) return null;
+  const all = (f.querySelector("h2")?.textContent||"") + " " + (f.textContent||"");
+  const m = all.match(/[A-Z][A-Z0-9]+-\d+/);
+  return m ? m[0].toUpperCase() : null;
+};
+const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
 
-  // ---- find / control the submit button(s)
-  function findSubmitButtons() {
-    const f = getForm(); if (!f) return [];
-    // Primary selector (most reliable)
-    let btns = [...f.querySelectorAll('button[name="submitWorklogButton"]')];
-    if (btns.length) return btns;
-    // Fallback by visible text
-    btns = [...f.querySelectorAll("button")].filter(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
-    if (btns.length) return btns;
-    // Last-chance generic submit-looking button
-    const guess = f.querySelector('button[type="button"]');
-    return guess ? [guess] : [];
-  }
-  function setSubmitDisabled(disabled){
-    const btns = findSubmitButtons();
-    btns.forEach(btn => {
-      btn.disabled = !!disabled;
-      btn.setAttribute("aria-disabled", disabled ? "true" : "false");
-      btn.setAttribute("data-state", disabled ? "not-active" : "active");
-      btn.style.pointerEvents = disabled ? "none" : "";
-      btn.classList.toggle("workattr--blocked", !!disabled);
-      btn.tabIndex = disabled ? -1 : 0;
-    });
-  }
-
-  // ---- native Task row -> hide it
-  function findNativeTaskRow(){
-    const f = getForm(); if (!f) return null;
-    const label = f.querySelector('label[for="_Picker_"]')
-            || [...f.querySelectorAll("label")].find(l => /\bTask\b/i.test(l.textContent||""));
-    if (!label) return null;
-    return label.closest("div")?.parentElement || label.closest("div");
-  }
-  function hideNativeTask(){
-    const row = findNativeTaskRow();
-    if (row && !row.classList.contains("workattr-hide-native")) row.classList.add("workattr-hide-native");
-  }
-
-  // ---- our custom select + warning
-  function ensureCustomField(){
-    const f = getForm(); if (!f) return null;
-    let host = f.querySelector("#custom-workattr-host");
-    if (!host){
-      host = document.createElement("div");
-      host.id = "custom-workattr-host";
-      const ref = findNativeTaskRow();
-      if (ref && ref.parentElement) ref.parentElement.insertBefore(host, ref);
-      else f.appendChild(host);
-
-      host.innerHTML = `
-        <label style="display:block;margin-bottom:4px;">Task (from API)</label>
-        <select id="custom-workattr-select" style="width:100%;height:32px;">
-          <option value="">Select an option...</option>
-        </select>
-        <div id="custom-workattr-warning" style="display:none;color:#d92929;margin-top:6px;font-size:12px;"></div>
-      `;
-
-      const sel = host.querySelector("#custom-workattr-select");
-      const arm = ()=>{ S.userPicking = true; setTimeout(()=>S.userPicking=false, 900); };
-      ["mousedown","focus","click"].forEach(e => sel.addEventListener(e, arm, true));
-      sel.addEventListener("change", ()=>{
-        window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
-        // Re-evaluate gate once user picked
-        enforce();
-      });
-    }
-    return host;
-  }
-  const getCustomSelect = () => getForm()?.querySelector("#custom-workattr-select") || null;
-  const getWarningEl    = () => getForm()?.querySelector("#custom-workattr-warning") || null;
-
-  function fillOptions(values){
-    ensureCustomField();
-    const sel = getCustomSelect(); if (!sel) return;
-    const prev = sel.value;
-    const sig  = JSON.stringify(values?.map(v=>v.value) || []);
-    if (sel.dataset.sig === sig) return;  // already current
-    sel.dataset.sig = sig;
-    sel.innerHTML = `<option value="">Select an option...</option>`;
-    (values||[]).forEach(({value})=>{
-      const o = document.createElement("option"); o.value = value; o.textContent = value; sel.appendChild(o);
-    });
-    if (prev && [...sel.options].some(o=>o.value===prev)) sel.value = prev; else sel.value = "";
-    window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
-  }
-
-  // ---- data fetchers (de-duped)
-  function jsonpFetch(issueKey, timeoutMs=8000){
-    if (S.pendingFetch[issueKey]) return S.pendingFetch[issueKey];
-    const p = new Promise((resolve)=>{
-      const cb = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
-      const sc = document.createElement("script"); let done=false;
-      const cleanup = () => { if (done) return; done=true; delete window[cb]; sc.remove(); };
-      const timer = setTimeout(()=>{ cleanup(); resolve({values:[]}); }, timeoutMs);
-
-      window[cb] = (data) => { clearTimeout(timer); cleanup(); resolve(data || {values:[]}); };
-      sc.onerror = ()=>{ clearTimeout(timer); cleanup(); resolve({values:[]}); };
-      sc.src = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
-      document.body.appendChild(sc);
-    }).then(data => {
-      S.cache[issueKey] = Array.isArray(data?.values) ? data.values : [];
-      delete S.pendingFetch[issueKey];
-      return S.cache[issueKey];
-    });
-    S.pendingFetch[issueKey] = p;
-    return p;
-  }
-
-  function getActivityStatus(issueKey){
-    if (issueKey in S.acCache) return Promise.resolve(!!S.acCache[issueKey]);
-    if (S.acPending[issueKey]) return S.acPending[issueKey];
-    const url = `/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`;
-    const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(), 7000);
-    const p = fetch(url, {signal: ctrl.signal})
-      .then(r => r.ok ? r.json() : null)
-      .then(j => {
-        clearTimeout(t);
-        const v = j?.fields?.[AC_FIELD];
-        const has = !!(v && String(v).trim());
-        S.acCache[issueKey] = has;
-        return has;
-      })
-      .catch(()=>{ clearTimeout(t); S.acCache[issueKey]=false; return false; })
-      .finally(()=>{ delete S.acPending[issueKey]; });
-    S.acPending[issueKey] = p;
-    return p;
-  }
-
-  const loadForIssue = throttle(async (issueKey)=>{
-    if (!issueKey) return;
-    if (!S.cache[issueKey]) await jsonpFetch(issueKey);
-    fillOptions(S.cache[issueKey] || []);
-  }, 350);
-
-  // ---- gate
-  async function computeGate(){
-    const key = S.currentIssueKey || getIssueKeyFromForm();
-    const sel = getCustomSelect();
-    const hasTask = !!(sel && sel.value);
-
-    let warn=false, hasAC=true, exempt=false;
-    if (hasDMPrefix(key)){
-      exempt = EXEMPT_ISSUES.has(key);
-      if (!exempt){
-        hasAC = await getActivityStatus(key);
-        warn = !hasAC;
-      }
-    }
-    const block = warn || !hasTask;
-    return { key, hasTask, hasAC, exempt, block, warn };
-  }
-
-  async function enforce(){
-    const f = getForm(); if (!f) return;
-    // prevent hot-looping
-    if (now() - S.lastEnforceAt < 300) return;
-    S.lastEnforceAt = now();
-
-    const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
-    const sig = `${key}|${warn?'W':'_'}|${hasTask?'T':'_'}|${block?'B':'_'}`;
-    if (S.lastGateSig !== sig){
-      LOG("gate", { key, hasAC, exempt, hasTask, block });
-      S.lastGateSig = sig;
-    }
-
-    // warning text
-    const w = getWarningEl();
-    if (w){
-      if (warn){
-        w.textContent = WARNING_TEXT;
-        w.style.display = "block";
-      } else {
-        w.textContent = "";
-        w.style.display = "none";
-      }
-    }
-
-    // button disable (re-attach watcher every time while blocked)
-    window._workattr_gate_block = !!block;
-    setSubmitDisabled(block);
-    if (block) startButtonObserver();
-  }
-
-  // ---- observers / lifecycle
-  function startDialogObserver(){
-    const f = getForm(); if (!f) return;
-    if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
-    const obs = new MutationObserver(() => { enforce(); });
-    obs.observe(f, { subtree:true, childList:true, attributes:true });
-    S.dialogObserver = obs;
-  }
-  function startButtonObserver(){
-    const btns = findSubmitButtons(); if (!btns.length) return;
-    if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-    const obs = new MutationObserver(() => {
-      if (window._workattr_gate_block) setSubmitDisabled(true);
-    });
-    btns.forEach(b => obs.observe(b, { attributes:true, attributeFilter:["disabled","data-state","class"] }));
-    S.btnObserver = obs;
-  }
-
-  function initForm(){
-    hideNativeTask();
-    ensureCustomField();
-    S.lastGateSig = null;
-    S.savingUntil = 0;
-    S.userPicking = false;
-    const k = getIssueKeyFromForm();
-    if (k && k !== S.currentIssueKey){ S.currentIssueKey = k; loadForIssue(k); }
-    startDialogObserver();
-    startButtonObserver();
-    enforce();
-  }
-
-  // global guards (click/enter) — last line of defence
-  function blockEventIfNeeded(ev){
-    if (!window._workattr_gate_block) return;
-    ev.preventDefault(); ev.stopPropagation();
-    const b = findSubmitButtons()[0]; if (b) b.blur();
-  }
-  ["click","pointerdown"].forEach(evt=>{
-    document.addEventListener(evt,(ev)=>{
-      const btns = findSubmitButtons();
-      if (btns.some(b => b.contains(ev.target))) blockEventIfNeeded(ev);
-    }, true);
+/* ---- submit button control ---- */
+function findSubmitButtons(){
+  const f = getForm(); if (!f) return [];
+  // 1) canonical
+  let btns = [...f.querySelectorAll('button[name="submitWorklogButton"]')];
+  if (btns.length) return btns;
+  // 2) visible text
+  btns = [...f.querySelectorAll("button")].filter(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
+  if (btns.length) return btns;
+  // 3) fallback
+  const guess = f.querySelector('button[type="button"]');
+  return guess ? [guess] : [];
+}
+function setSubmitDisabled(disabled){
+  const btns = findSubmitButtons();
+  btns.forEach(btn => {
+    btn.disabled = !!disabled;
+    if (disabled) btn.setAttribute("disabled",""); else btn.removeAttribute("disabled");
+    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
+    btn.setAttribute("data-state", disabled ? "not-active" : "active");
+    btn.style.pointerEvents = disabled ? "none" : "";
+    btn.classList.toggle("workattr--blocked", !!disabled);
+    btn.tabIndex = disabled ? -1 : 0;
   });
-  document.addEventListener("keydown",(ev)=>{
-    if (ev.key === "Enter" && getForm()) blockEventIfNeeded(ev);
-  }, true);
+}
 
-  // monitor dialog open/close
-  setInterval(()=>{
-    const open = !!getForm();
-    if (open !== S.formOpen){
-      S.formOpen = open;
-      if (open) { initForm(); }
-      else {
-        S.currentIssueKey = null;
-        if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-        if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
+/* ---- hide native field & inject custom ---- */
+function findNativeTaskRow(){
+  const f = getForm(); if (!f) return null;
+  const label = f.querySelector('label[for="_Picker_"]')
+          || [...f.querySelectorAll("label")].find(l => /\bTask\b/i.test(l.textContent||""));
+  if (!label) return null;
+  return label.closest("div")?.parentElement || label.closest("div");
+}
+function hideNativeTask(){
+  const row = findNativeTaskRow();
+  if (row && !row.classList.contains("workattr-hide-native")) row.classList.add("workattr-hide-native");
+}
+function ensureCustomField(){
+  const f = getForm(); if (!f) return null;
+  let host = f.querySelector("#custom-workattr-host");
+  if (!host){
+    host = document.createElement("div");
+    host.id = "custom-workattr-host";
+    const ref = findNativeTaskRow();
+    if (ref && ref.parentElement) ref.parentElement.insertBefore(host, ref);
+    else f.appendChild(host);
+    host.innerHTML = `
+      <label style="display:block;margin-bottom:4px;">Task (from API)</label>
+      <select id="custom-workattr-select" style="width:100%;height:32px;">
+        <option value="">Select an option...</option>
+      </select>
+      <div id="custom-workattr-warning" style="display:none;color:#d92929;margin-top:6px;font-size:12px;"></div>
+    `;
+    const sel = host.querySelector("#custom-workattr-select");
+    const arm = ()=>{ S.userPicking = true; setTimeout(()=>S.userPicking=false, 900); };
+    ["mousedown","focus","click"].forEach(e => sel.addEventListener(e, arm, true));
+    sel.addEventListener("change", ()=>{
+      window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
+      enforce();
+    });
+  }
+  return host;
+}
+const getCustomSelect = ()=> getForm()?.querySelector("#custom-workattr-select") || null;
+const getWarningEl    = ()=> getForm()?.querySelector("#custom-workattr-warning") || null;
+
+function fillOptions(values){
+  ensureCustomField();
+  const sel = getCustomSelect(); if (!sel) return;
+  const prev = sel.value;
+  const sig  = JSON.stringify(values?.map(v=>v.value) || []);
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.innerHTML = `<option value="">Select an option...</option>`;
+  (values||[]).forEach(({value})=>{
+    const o = document.createElement("option"); o.value = value; o.textContent = value; sel.appendChild(o);
+  });
+  if (prev && [...sel.options].some(o=>o.value===prev)) sel.value = prev; else sel.value = "";
+  window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
+}
+
+/* ---- data fetch (deduped) ---- */
+function jsonpFetch(issueKey, timeoutMs=8000){
+  if (S.pendingFetch[issueKey]) return S.pendingFetch[issueKey];
+  const p = new Promise((resolve)=>{
+    const cb = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
+    const sc = document.createElement("script"); let done=false;
+    const cleanup = ()=>{ if (done) return; done=true; delete window[cb]; sc.remove(); };
+    const timer = setTimeout(()=>{ cleanup(); resolve({values:[]}); }, timeoutMs);
+    window[cb] = (data)=>{ clearTimeout(timer); cleanup(); resolve(data||{values:[]}); };
+    sc.onerror=()=>{ clearTimeout(timer); cleanup(); resolve({values:[]}); };
+    sc.src = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
+    document.body.appendChild(sc);
+  }).then(data=>{
+    S.cache[issueKey] = Array.isArray(data?.values) ? data.values : [];
+    delete S.pendingFetch[issueKey];
+    return S.cache[issueKey];
+  });
+  S.pendingFetch[issueKey] = p;
+  return p;
+}
+function getActivityStatus(issueKey){
+  if (issueKey in S.acCache) return Promise.resolve(!!S.acCache[issueKey]);
+  if (S.acPending[issueKey]) return S.acPending[issueKey];
+  const url = `/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`;
+  const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(), 7000);
+  const p = fetch(url,{signal:ctrl.signal})
+    .then(r=>r.ok?r.json():null)
+    .then(j=>{ clearTimeout(t); const v=j?.fields?.[AC_FIELD]; const has=!!(v && String(v).trim()); S.acCache[issueKey]=has; return has; })
+    .catch(()=>{ clearTimeout(t); S.acCache[issueKey]=false; return false; })
+    .finally(()=>{ delete S.acPending[issueKey]; });
+  S.acPending[issueKey]=p; return p;
+}
+const loadForIssue = throttle(async (issueKey)=>{
+  if (!issueKey) return;
+  if (!S.cache[issueKey]) await jsonpFetch(issueKey);
+  fillOptions(S.cache[issueKey]||[]);
+}, 350);
+
+/* ---- gate + enforcement ---- */
+async function computeGate(){
+  const key = S.currentIssueKey || getIssueKeyFromForm();
+  const sel = getCustomSelect();
+  const hasTask = !!(sel && sel.value);
+  let warn=false, hasAC=true, exempt=false;
+  if (hasDMPrefix(key)){
+    exempt = EXEMPT_ISSUES.has(key);
+    if (!exempt){ hasAC = await getActivityStatus(key); warn = !hasAC; }
+  }
+  const block = warn || !hasTask;
+  return { key, hasTask, hasAC, exempt, block, warn };
+}
+function startButtonInterval(){
+  if (S.btnInterval) return;
+  S.btnInterval = setInterval(()=>{
+    if (!getForm() || !window._workattr_gate_block){ stopButtonInterval(); return; }
+    setSubmitDisabled(true);  // re-apply to any freshly swapped button
+  }, 400);
+}
+function stopButtonInterval(){ if (S.btnInterval){ clearInterval(S.btnInterval); S.btnInterval=null; } }
+
+async function enforce(){
+  const f = getForm(); if (!f) return;
+  if (now() - S.lastEnforceAt < 250) return;
+  S.lastEnforceAt = now();
+
+  const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
+  const sig = `${key}|${warn?'W':'_'}|${hasTask?'T':'_'}|${block?'B':'_'}`;
+  if (S.lastGateSig !== sig){ LOG("gate", { key, hasAC, exempt, hasTask, block }); S.lastGateSig = sig; }
+
+  const w = getWarningEl();
+  if (w){ if (warn){ w.textContent = WARNING_TEXT; w.style.display="block"; } else { w.textContent=""; w.style.display="none"; } }
+
+  window._workattr_gate_block = !!block;
+  setSubmitDisabled(block);
+  if (block){ startButtonInterval(); startButtonObserver(); }
+  else { stopButtonInterval(); }
+}
+
+/* ---- observers & lifecycle ---- */
+function startDialogObserver(){
+  const f = getForm(); if (!f) return;
+  if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
+  const obs = new MutationObserver(() => enforce());
+  obs.observe(f, { subtree:true, childList:true, attributes:true });
+  S.dialogObserver = obs;
+}
+function startButtonObserver(){
+  const btns = findSubmitButtons(); if (!btns.length) return;
+  if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
+  const obs = new MutationObserver(()=>{ if (window._workattr_gate_block) setSubmitDisabled(true); });
+  btns.forEach(b => obs.observe(b, { attributes:true, attributeFilter:["disabled","data-state","class"] }));
+  S.btnObserver = obs;
+}
+
+function initForm(){
+  hideNativeTask();
+  ensureCustomField();
+  S.lastGateSig = null;
+  S.savingUntil = 0;
+  S.userPicking = false;
+  const k = getIssueKeyFromForm();
+  if (k && k !== S.currentIssueKey){ S.currentIssueKey = k; loadForIssue(k); }
+  startDialogObserver();
+  startButtonObserver();
+  enforce();
+}
+
+/* ---- global guards (visual fallback and hard block) ---- */
+function blockEventIfNeeded(ev){
+  if (!window._workattr_gate_block) return;
+  ev.preventDefault(); ev.stopPropagation();
+  const b = findSubmitButtons()[0]; if (b) b.blur();
+}
+["click","pointerdown"].forEach(evt=>{
+  document.addEventListener(evt,(ev)=>{
+    const btns = findSubmitButtons();
+    if (btns.some(b => b.contains(ev.target))) blockEventIfNeeded(ev);
+  }, true);
+});
+document.addEventListener("keydown",(ev)=>{
+  if (ev.key === "Enter" && getForm()) blockEventIfNeeded(ev);
+}, true);
+
+/* ---- monitor open/close & selection changes ---- */
+setInterval(()=>{
+  const open = !!getForm();
+  if (open !== S.formOpen){
+    S.formOpen = open;
+    if (open) { initForm(); }
+    else {
+      S.currentIssueKey = null;
+      stopButtonInterval();
+      if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
+      if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
+    }
+  } else if (open){
+    const k = getIssueKeyFromForm();
+    if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
+      S.currentIssueKey = k;
+      loadForIssue(k);
+      enforce();
+    }
+  }
+}, 600);
+
+/* ---- inject attr & block POST ---- */
+const _fetch = window.fetch;
+window.fetch = function(url, opts, ...rest){
+  try{
+    if (typeof url === "string" && url.includes("/rest/tempo-timesheets/4/worklogs/") && opts && typeof opts.body === "string"){
+      if (window._workattr_gate_block){
+        LOG("blocked POST while gate active");
+        return Promise.resolve(new Response(JSON.stringify({blocked:true}), {status:400, headers:{"Content-Type":"application/json"}}));
       }
-    } else if (open){
-      const k = getIssueKeyFromForm();
-      if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
-        S.currentIssueKey = k;
-        loadForIssue(k);
-        enforce();
+      const chosen = window._tempoSelectedWorkAttr && window._tempoSelectedWorkAttr[TEMPO_ATTR.key];
+      if (chosen){
+        const b = JSON.parse(opts.body || "{}");
+        b.attributes = b.attributes || {};
+        b.attributes[TEMPO_ATTR.id] = chosen;
+        opts.body = JSON.stringify(b);
+        LOG("injected attr into POST", b.attributes);
       }
     }
-  }, 600);
+  }catch(e){}
+  return _fetch.apply(this, [url, opts, ...rest]);
+};
 
-  // patch fetch to inject attribute & block final POST
-  const _fetch = window.fetch;
-  window.fetch = function(url, opts, ...rest){
-    try{
-      if (typeof url === "string" && url.includes("/rest/tempo-timesheets/4/worklogs/") && opts && typeof opts.body === "string"){
-        if (window._workattr_gate_block){
-          LOG("blocked POST while gate active");
-          return Promise.resolve(new Response(JSON.stringify({blocked:true}), {status:400, headers:{"Content-Type":"application/json"}}));
-        }
-        const chosen = window._tempoSelectedWorkAttr && window._tempoSelectedWorkAttr[TEMPO_ATTR.key];
-        if (chosen){
-          const b = JSON.parse(opts.body || "{}");
-          b.attributes = b.attributes || {};
-          b.attributes[TEMPO_ATTR.id] = chosen;  // use numeric id for Tempo
-          opts.body = JSON.stringify(b);
-          LOG("injected attr into POST", b.attributes);
-        }
-      }
-    }catch(e){}
-    return _fetch.apply(this, [url, opts, ...rest]);
-  };
+/* ---- styles ---- */
+const css = document.createElement("style");
+css.textContent = `
+  .workattr-hide-native{display:none!important}
+  #custom-workattr-host{margin-top:8px}
+  button.workattr--blocked{opacity:.55;pointer-events:none}
+`;
+document.head.appendChild(css);
 
-  // styles
-  const css = document.createElement("style");
-  css.textContent = `
-    .workattr-hide-native{display:none!important}
-    #custom-workattr-host{margin-top:8px}
-    button.workattr--blocked{opacity:.55;pointer-events:none}
-  `;
-  document.head.appendChild(css);
-
-  LOG("Banner v3.8-stable loaded");
+LOG("Banner v3.9 sticky-disable loaded");
 })();
 </script>
