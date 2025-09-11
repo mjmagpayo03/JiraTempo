@@ -1,7 +1,7 @@
 <script>
 (() => {
 /* ------------ Config ------------ */
-const DEBUG = false;                         // set true for verbose logs
+const DEBUG = false;                         // flip to true for verbose logs
 const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
 
 const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
@@ -14,17 +14,19 @@ const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet availa
 const S = {
   formOpen:false,
   currentIssueKey:null,
+  choosingIssue:false,           // NEW: pause while listbox is open
   userPicking:false,
   savingUntil:0,
-  cache:Object.create(null),           // issueKey -> [{key,value}]
-  pendingFetch:Object.create(null),    // issueKey -> Promise
-  acCache:Object.create(null),         // issueKey -> boolean
-  acPending:Object.create(null),       // issueKey -> Promise<boolean>
+  cache:Object.create(null),
+  pendingFetch:Object.create(null),
+  acCache:Object.create(null),
+  acPending:Object.create(null),
   lastGateSig:null,
   lastEnforceAt:0,
+  lastBtnDisabled:null,          // NEW: avoid redundant DOM writes
   btnObserver:null,
   dialogObserver:null,
-  btnInterval:null,                    // sticky disable loop
+  btnInterval:null,              // sticky disable loop
 };
 
 /* ------------ Helpers ------------ */
@@ -34,35 +36,42 @@ const throttle = (fn, ms) => { let t=0; return (...a)=>{ if (now()-t>=ms){ t=now
 const getForm = ()=> document.querySelector("#worklogForm");
 const getIssueKeyFromForm = () => {
   const f = getForm(); if (!f) return null;
-  const all = (f.querySelector("h2")?.textContent||"") + " " + (f.textContent||"");
-  const m = all.match(/[A-Z][A-Z0-9]+-\d+/);
+  const h = f.querySelector("h2")?.textContent || "";
+  const m = h.match(/[A-Z][A-Z0-9]+-\d+/);
   return m ? m[0].toUpperCase() : null;
 };
 const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
 
+/* --- detect issue listbox open/close (pauses our work while user browses) --- */
+function detectListboxOpen(){
+  const f = getForm(); if (!f) return false;
+  // react-select renders a list with role="listbox" inside the dialog while open
+  return !!f.querySelector('[role="listbox"]');
+}
+
 /* ---- submit button control ---- */
 function findSubmitButtons(){
   const f = getForm(); if (!f) return [];
-  // 1) canonical
   let btns = [...f.querySelectorAll('button[name="submitWorklogButton"]')];
   if (btns.length) return btns;
-  // 2) visible text
   btns = [...f.querySelectorAll("button")].filter(b => /^(Log Time|Update)$/i.test((b.textContent||"").trim()));
   if (btns.length) return btns;
-  // 3) fallback
   const guess = f.querySelector('button[type="button"]');
   return guess ? [guess] : [];
 }
 function setSubmitDisabled(disabled){
+  if (S.lastBtnDisabled === disabled) return; // avoid churn
+  S.lastBtnDisabled = disabled;
   const btns = findSubmitButtons();
   btns.forEach(btn => {
-    btn.disabled = !!disabled;
-    if (disabled) btn.setAttribute("disabled",""); else btn.removeAttribute("disabled");
-    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    btn.setAttribute("data-state", disabled ? "not-active" : "active");
-    btn.style.pointerEvents = disabled ? "none" : "";
-    btn.classList.toggle("workattr--blocked", !!disabled);
-    btn.tabIndex = disabled ? -1 : 0;
+    const d = !!disabled;
+    if (btn.disabled !== d) btn.disabled = d;
+    if (d) btn.setAttribute("disabled",""); else btn.removeAttribute("disabled");
+    btn.setAttribute("aria-disabled", d ? "true" : "false");
+    btn.setAttribute("data-state", d ? "not-active" : "active");
+    btn.style.pointerEvents = d ? "none" : "";
+    btn.classList.toggle("workattr--blocked", d);
+    btn.tabIndex = d ? -1 : 0;
   });
 }
 
@@ -177,14 +186,19 @@ function startButtonInterval(){
   if (S.btnInterval) return;
   S.btnInterval = setInterval(()=>{
     if (!getForm() || !window._workattr_gate_block){ stopButtonInterval(); return; }
-    setSubmitDisabled(true);  // re-apply to any freshly swapped button
-  }, 400);
+    setSubmitDisabled(true);   // re-apply to any freshly swapped button
+  }, 700);                      // slower to reduce churn
 }
 function stopButtonInterval(){ if (S.btnInterval){ clearInterval(S.btnInterval); S.btnInterval=null; } }
 
 async function enforce(){
   const f = getForm(); if (!f) return;
-  if (now() - S.lastEnforceAt < 250) return;
+
+  // NEW: pause while user is browsing the issue listbox
+  S.choosingIssue = detectListboxOpen();
+  if (S.choosingIssue) return;
+
+  if (now() - S.lastEnforceAt < 400) return;  // slower cadence
   S.lastEnforceAt = now();
 
   const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
@@ -220,6 +234,7 @@ function initForm(){
   hideNativeTask();
   ensureCustomField();
   S.lastGateSig = null;
+  S.lastBtnDisabled = null;
   S.savingUntil = 0;
   S.userPicking = false;
   const k = getIssueKeyFromForm();
@@ -258,14 +273,17 @@ setInterval(()=>{
       if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
     }
   } else if (open){
-    const k = getIssueKeyFromForm();
-    if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
-      S.currentIssueKey = k;
-      loadForIssue(k);
-      enforce();
+    // only react to *actual* key change, and only when not browsing the listbox
+    if (!detectListboxOpen()){
+      const k = getIssueKeyFromForm();
+      if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
+        S.currentIssueKey = k;
+        loadForIssue(k);
+        enforce();
+      }
     }
   }
-}, 600);
+}, 900);   // slower overall polling
 
 /* ---- inject attr & block POST ---- */
 const _fetch = window.fetch;
@@ -298,6 +316,6 @@ css.textContent = `
 `;
 document.head.appendChild(css);
 
-LOG("Banner v3.9 sticky-disable loaded");
+LOG("Banner v3.9.2 light-poll loaded");
 })();
 </script>
