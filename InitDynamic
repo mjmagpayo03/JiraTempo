@@ -1,12 +1,11 @@
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v4.4
-   * Fixes:
-   *  - Avoid injecting "attributes" into Tempo search POSTs (SearchParamsBean)
-   *  - Make disable stick even if the button remounts (sentinel)
-   * Keeps:
-   *  - KTAXA bypass, DM gating (AC check), JSONP Task, DOM+network issueKey discovery
+   * Tempo Work Attribute Helper — Core v4.5
+   * - Robust disable (click/key guards + mutation observers)
+   * - Fix isKTAXA() return typo
+   * - Keep safe injection (no “attributes” on search bodies)
+   * - KTAXA bypass, DM Activity Code gate, JSONP Task select
    * ============================================================ */
 
   /* ---------- Config ---------- */
@@ -22,8 +21,6 @@
   const EXEMPT_ISSUES  = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
-  const BUTTON_REAPPLY_MS   = 60;
-  const SENTINEL_MS         = 2000;   // keep re-applying disable briefly
 
   /* ---------- State ---------- */
   const S = {
@@ -40,7 +37,7 @@
     formMO: null,
     formMOStarted: false,
     debounceTimer: null,
-    sentinelTimer: null
+    blocked: false
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -63,14 +60,14 @@
     document.head.appendChild(el);
   }
 
-  /* ---------- Basics ---------- */
+  /* ---------- Helpers ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
 
   function getForm() { return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
-    if (S.ktaxa !== null) return S.ktaxxa;
+    if (S.ktaxa !== null) return S.ktaxa;               // <- fixed
     try {
       const r = await fetch("/rest/api/2/myself?expand=groups");
       if (!r.ok) throw 0;
@@ -107,6 +104,7 @@
     return m ? m[0].toUpperCase() : null;
   }
 
+  // Learn key from any network URL
   function sniffIssueKeyFromURL(url) {
     if (!url) return;
     let key = null;
@@ -125,7 +123,6 @@
     }
   }
 
-  /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
     let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
@@ -182,38 +179,74 @@
     if (preselect && keep.has(preselect)) select.value = preselect;
   }
 
-  /* ---------- Warning + Disable ---------- */
-  function setSubmitBlocked(form, blocked) {
+  /* ---------- Disable: sticky guards ---------- */
+  function armButtonGuards(form) {
     const btn = getSubmitBtn(form);
-    if (btn) {
-      btn.disabled = !!blocked;
-      btn.setAttribute("data-state", blocked ? "not-active" : "active");
-      btn.setAttribute("aria-disabled", String(!!blocked));
-      btn.classList.toggle("workattr-disabled-btn", !!blocked);
+    if (!btn) return;
+
+    // Click guard (capture) so React onClick never fires when blocked
+    if (!btn.__workattrClickGuard) {
+      btn.__workattrClickGuard = true;
+      btn.addEventListener("click", (e) => {
+        if (S.blocked) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation?.();
+          return false;
+        }
+      }, true);
     }
-    // Sentinel to re-apply while React remounts button
-    if (S.sentinelTimer) { clearInterval(S.sentinelTimer); S.sentinelTimer = null; }
-    if (blocked) {
-      const start = Date.now();
-      S.sentinelTimer = setInterval(() => {
-        const f = getForm();
-        if (!f) return;
-        const b = getSubmitBtn(f);
-        if (b) {
-          b.disabled = true;
-          b.setAttribute("data-state", "not-active");
-          b.setAttribute("aria-disabled", "true");
-          b.classList.add("workattr-disabled-btn");
+
+    // Key guard (Enter)
+    if (!form.__workattrKeyGuard) {
+      form.__workattrKeyGuard = true;
+      form.addEventListener("keydown", (e) => {
+        if (S.blocked && (e.key === "Enter" || e.keyCode === 13)) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation?.();
+          return false;
         }
-        if (Date.now() - start > SENTINEL_MS) {
-          clearInterval(S.sentinelTimer);
-          S.sentinelTimer = null;
-        }
-      }, 120);
+      }, true);
+    }
+
+    // Mutation observer on button: if React flips attrs, re-apply
+    if (btn.__workattrMO) btn.__workattrMO.disconnect();
+    const mo = new MutationObserver(() => {
+      if (S.blocked) {
+        btn.disabled = true;
+        btn.setAttribute("data-state", "not-active");
+        btn.setAttribute("aria-disabled", "true");
+        btn.classList.add("workattr-disabled-btn");
+      }
+    });
+    mo.observe(btn, { attributes: true, childList: false, subtree: false });
+    btn.__workattrMO = mo;
+
+    // Button replacement watcher
+    if (!form.__workattrBtnSwapMO) {
+      const swapMO = new MutationObserver(() => {
+        const b = getSubmitBtn(form);
+        if (b && b !== btn) armButtonGuards(form);
+      });
+      swapMO.observe(form, { childList: true, subtree: true });
+      form.__workattrBtnSwapMO = swapMO;
     }
   }
 
-  /* ---------- Data ---------- */
+  function setSubmitBlocked(form, blocked) {
+    S.blocked = !!blocked;
+    const btn = getSubmitBtn(form);
+    if (btn) {
+      btn.disabled = S.blocked;
+      btn.setAttribute("data-state", S.blocked ? "not-active" : "active");
+      btn.setAttribute("aria-disabled", String(S.blocked));
+      btn.classList.toggle("workattr-disabled-btn", S.blocked);
+    }
+    armButtonGuards(form);
+  }
+
+  /* ---------- Data & JSONP ---------- */
   function jsonp(url) {
     return new Promise((resolve, reject) => {
       const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
@@ -254,7 +287,7 @@
         const v = j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length > 0);
       } catch {
-        // Don't block on failures
+        // fail-open: don't block if Jira lookup glitches
         return true;
       }
     })();
@@ -284,12 +317,12 @@
     setSubmitBlocked(form, block);
   }
 
-  /* ---------- Main loader ---------- */
+  /* ---------- Loader ---------- */
   async function loadForCurrentForm() {
     const form = getForm();
     if (!form) return;
-    if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
+    if (S.debounceTimer) clearTimeout(S.debounceTimer);
     S.debounceTimer = setTimeout(async () => {
       const issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey;
       if (!issueKey) { warn("issueKey not found"); return; }
@@ -326,7 +359,6 @@
       }
 
       await applyGate(form);
-      setTimeout(() => applyGate(form), BUTTON_REAPPLY_MS);
     }, OBSERVE_DEBOUNCE_MS);
   }
 
@@ -350,21 +382,19 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards ---------- */
+  /* ---------- Injection guards (no search pollution) ---------- */
   function looksLikeCreateUpdate(bodyObj) {
-    // Tempo create/update bodies always include started/timeSpentSeconds (or originTaskId) etc.
     if (!bodyObj || typeof bodyObj !== "object") return false;
     if ("started" in bodyObj) return true;
     if ("timeSpentSeconds" in bodyObj) return true;
     if ("originTaskId" in bodyObj) return true;
     if ("issueId" in bodyObj) return true;
-    // Conversely, search bodies typically have 'from', 'to', 'worker', 'projectKey' etc.
+    // common search params -> not create/update
     if ("from" in bodyObj || "to" in bodyObj) return false;
     if ("offset" in bodyObj || "limit" in bodyObj) return false;
     return false;
   }
 
-  /* ---------- Network wiring ---------- */
   function wireNetwork() {
     // XHR
     if (!S.wiredXHR) {
@@ -374,24 +404,17 @@
 
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
         try { sniffIssueKeyFromURL(url); } catch {}
-        this.__url = url || "";
         this.__method = (method || "").toUpperCase();
         return _open.call(this, method, url, ...rest);
       };
 
       XMLHttpRequest.prototype.send = function(body) {
         try {
-          // Only mutate KTAXA=false, method POST/PUT, and body looks like create/update
           if (S.ktaxa === true) return _send.call(this, body);
-
-          const isMutating = /POST|PUT/.test(this.__method || "");
-          if (!isMutating || !body || typeof body !== "string") {
+          if (!/POST|PUT/.test(this.__method || "") || !body || typeof body !== "string") {
             return _send.call(this, body);
           }
-
-          let obj;
-          try { obj = JSON.parse(body); } catch { obj = null; }
-
+          let obj; try { obj = JSON.parse(body); } catch { obj = null; }
           if (looksLikeCreateUpdate(obj)) {
             const form = getForm();
             const sel = form && getCustomSelect(form);
@@ -403,10 +426,7 @@
               log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) {
-          // swallow to avoid breaking Tempo internals
-          warn("XHR inject skipped due to error:", e);
-        }
+        } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
       };
     }
@@ -424,9 +444,7 @@
           if (S.ktaxa === true) return _fetch(input, init);
 
           if (/POST|PUT/.test(meth) && init?.body && typeof init.body === "string") {
-            let obj;
-            try { obj = JSON.parse(init.body); } catch { obj = null; }
-
+            let obj; try { obj = JSON.parse(init.body); } catch { obj = null; }
             if (looksLikeCreateUpdate(obj)) {
               const form = getForm();
               const sel = form && getCustomSelect(form);
@@ -439,9 +457,7 @@
               }
             }
           }
-        } catch (e) {
-          warn("fetch inject skipped due to error:", e);
-        }
+        } catch (e) { warn("fetch inject skipped:", e); }
         return _fetch(input, init);
       };
     }
@@ -454,7 +470,6 @@
     wireObservers();
     log("Ready");
   }
-
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", boot);
   } else {
