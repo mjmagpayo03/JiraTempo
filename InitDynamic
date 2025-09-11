@@ -1,358 +1,408 @@
 <script>
-(() => {
-  /* ==============================
-   * Tempo "Task (from API)" helper
-   * Core v4 – stable build
-   * ============================== */
+/* =========================================================================
+   Tempo “Task (from API)” + Activity Code guard
+   Core v4.1  —  2025-09-11
+   - KTAXA users: script bypasses (native Tempo behaviour)
+   - Injects custom Task dropdown fed by ScriptRunner endpoint
+   - Writes selection to Tempo create/edit payload
+   - Shows/clears warning based on Activity Code (customfield_17447)
+   - Disables/enables the Log Time button reliably
+   - Safe against re-renders; throttled and idempotent
+   ===================================================================== */
 
-  /* --------- Config --------- */
-  const ATTR = { id: 14, key: "_Picker_", label: "Task" };            // Tempo work attribute
-  const SR_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD = "customfield_17447";                                // Activity Code field
-  const EXEMPT_KEYS = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]); // no warning/blocks
-  const KTAXA_GROUP = "DM-KTAXA";                                      // bypass group
-  const WARNING_TEXT = 'Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.';
+/* ------------------------ Config ------------------------------------ */
+const CFG = {
+  ATTR_ID: 14,                         // Tempo work attribute id
+  ATTR_KEY: "_Picker_",                // Tempo work attribute key
+  ATTR_LABEL: "Task",                  // Label shown next to native field
+  SR_ENDPOINT: "/rest/scriptrunner/latest/custom/tempoWorkType", // ?issueKey=KEY&callback=cb
+  AC_FIELD: "customfield_17447",       // Activity Code custom field id
+  // Issues that should NEVER show the Activity Code warning
+  EXEMPT_KEYS: ["DM-36231", "DM-41282", "DM-41281", "DM-41280", "DM-36382"],
+  // Only DM-* keys are subject to Activity Code gating
+  GATE_PREFIX: /^DM-\d+$/i,
+  KTAXA_GROUP: "DM-KTAXA",
+  LOG: true
+};
 
-  /* --------- State --------- */
-  let BYPASS_FOR_KTAXA = false;                                        // skip all custom logic if true
-  const optionsCache = new Map();                                      // issueKey -> [{key,value}]
-  const acCache = new Map();                                           // issueKey -> boolean
-  let lastSelectedValue = "";                                          // current select value we will inject
-  let wiredFormId = null;                                              // to prevent double-wiring
+/* ------------------------ Tiny logger -------------------------------- */
+const L = (...a) => CFG.LOG && console.log("[WorkAttr]", ...a);
+const W = (...a) => CFG.LOG && console.warn("[WorkAttr]", ...a);
 
-  const log = (...a) => console.log("[WorkAttr]", ...a);
-  const warn = (...a) => console.warn("[WorkAttr]", ...a);
+/* ------------------------ State ------------------------------------- */
+const S = {
+  ktaxa: null,               // tri-state: null (unknown) | true | false
+  lastIssueKey: null,        // last issue processed in the open form
+  lastGate: null,            // last gating snapshot to avoid churn
+  optionsCache: new Map(),   // issueKey -> [{key,value},...]
+  selection: null,           // current selected task value
+  xhrHooked: false,          // ensure we hook XHR just once
+};
 
-  /* --------- Utilities --------- */
+/* ------------------------ Utilities --------------------------------- */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function once(fn) { let ran=false, val; return (...args)=>ran?val:(ran=true,(val=fn(...args))); }
+function debounce(fn, ms=120) { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms);} }
+function throttle(fn, ms=120){ let b=false,l; return (...a)=>{ if(b){l=a; return;} b=true; fn(...a); setTimeout(()=>{ b=false; if(l){const x=l; l=null; fn(...x);} },ms);}}
 
-  // Robustly locate the current worklog form (create or edit)
-  function getForm() {
-    return document.querySelector("#worklogForm") || null;
-  }
-
-  // Prefer the issue picker input as anchor
-  function findIssuePickerRoot(form) {
-    return form.querySelector("#issuePickerInput")
-        || form.querySelector('[aria-haspopup][aria-expanded]')
-        || form;
-  }
-
-  // Find the native Task row and container
-  function findNativeTaskRow(form) {
-    const label = form.querySelector('label[for="_Picker_"]')
-              || [...form.querySelectorAll("#worklogForm label")]
-                   .find(l => /^\s*Task\s*$/i.test(l.textContent || ""));
-    if (!label) return null;
-    return label.closest(".sc-bKhNmF") || label.closest("div");
-  }
-
-  // Create/ensure our custom field right under the native row
-  function ensureCustomField(form) {
-    let host = form.querySelector("#custom-workattr-host");
-    if (host) return host;
-
-    host = document.createElement("div");
-    host.id = "custom-workattr-host";
-    host.className = "sc-bKhNmF LBFFT";
-    host.setAttribute("type","default");
-    host.innerHTML = `
-      <div class="sc-cgFpzT eGniAY">
-        <label class="sc-jvLaUc lauuLP" id="custom-workattr-label">${ATTR.label} (from API)</label>
-      </div>
-      <div class="sc-jDDxOa geIDWX">
-        <select id="custom-workattr-select" class="sc-cTQhss gwKKdf" style="width:100%">
-          <option value="">Select an option...</option>
-        </select>
-        <div id="custom-workattr-help" style="display:none; color:#c0392b; margin-top:6px;"></div>
-      </div>`;
-
-    const nativeRow = findNativeTaskRow(form);
-    if (nativeRow && nativeRow.parentElement) {
-      nativeRow.parentElement.insertBefore(host, nativeRow.nextSibling);
-    } else {
-      form.appendChild(host);
-    }
-    return host;
-  }
-
-  function showNativeTask(form, show) {
-    const row = findNativeTaskRow(form);
-    if (row) row.style.display = show ? "" : "none";
-  }
-
-  function removeCustomField(form) {
-    const host = form.querySelector("#custom-workattr-host");
-    if (host && host.parentElement) host.parentElement.removeChild(host);
-  }
-
-  // Read selected work issue key from the dialog, robust to both open/closed pickers
-  function getIssueKeyFromForm() {
-    const f = getForm(); if (!f) return null;
-    const RE = /[A-Z][A-Z0-9]+-\d+/;
-
-    // If the list is open and an active option exists
-    const inp = f.querySelector("#issuePickerInput");
-    if (inp) {
-      const activeId = inp.getAttribute("aria-activedescendant");
-      if (activeId) {
-        const opt = document.getElementById(activeId);
-        if (opt) {
-          const m = (opt.textContent || "").match(RE);
-          if (m) return m[0].toUpperCase();
-        }
-      }
-      // Closed/summary trigger text
-      const trigger =
-        inp.closest("#worklogForm")?.querySelector('[aria-haspopup="listbox"], [aria-haspopup="dialog"]')
-        || inp.closest("#worklogForm")?.querySelector('[data-testid*="issue"], [data-test*="issue"]');
-      if (trigger) {
-        const m = (trigger.textContent || "").match(RE);
-        if (m) return m[0].toUpperCase();
-      }
-    }
-
-    // Current selected row if listbox is open
-    const selected = f.querySelector('[aria-selected="true"]');
-    if (selected) {
-      const m = (selected.textContent || "").match(RE);
-      if (m) return m[0].toUpperCase();
-    }
-
-    // Fallback: scan once
-    const m = (f.textContent || "").match(RE);
-    return m ? m[0].toUpperCase() : null;
-  }
-
-  // JSONP utility (SR endpoint returns JSONP)
-  function jsonp(url, params={}) {
-    return new Promise((resolve, reject) => {
-      const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
-      params.callback = cb;
-      const q = new URLSearchParams(params).toString();
-      const src = url + (url.includes("?") ? "&" : "?") + q;
-
-      const script = document.createElement("script");
-      script.src = src;
-      let done = false;
-      window[cb] = (data) => {
-        if (done) return;
-        done = true;
-        cleanup();
-        resolve(data);
-      };
-      script.onerror = (e) => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(e);
-      };
-      function cleanup() {
-        try { delete window[cb]; } catch(_){}
-        script.remove();
-      }
-      document.body.appendChild(script);
-    });
-  }
-
-  // Fetch Task options for an issue
-  async function fetchOptions(issueKey) {
-    if (optionsCache.has(issueKey)) return optionsCache.get(issueKey);
-    const data = await jsonp(SR_ENDPOINT, { issueKey });
-    const values = Array.isArray(data?.values) ? data.values : [];
-    optionsCache.set(issueKey, values);
-    return values;
-  }
-
-  // Lookup Activity Code presence
-  async function fetchHasAC(issueKey) {
-    if (acCache.has(issueKey)) return acCache.get(issueKey);
-    try {
-      const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`, { credentials: "same-origin" });
-      if (!r.ok) throw new Error(r.status);
-      const j = await r.json();
-      const v = j?.fields?.[AC_FIELD];
-      const has = !!(Array.isArray(v) ? v.length : v);
-      acCache.set(issueKey, has);
-      return has;
-    } catch (e) {
-      warn("AC lookup failed for", issueKey, e);
-      // Fail open to avoid blocking valid logs
-      acCache.set(issueKey, true);
-      return true;
-    }
-  }
-
-  // Decide whether to block logging (disable button) and/or show warning
-  async function computeGate(issueKey, hasTask) {
-    const isDM = /^DM-\d+$/i.test(issueKey || "");
-    const exempt = EXEMPT_KEYS.has((issueKey || "").toUpperCase());
-    let hasAC = true;
-    if (isDM && !exempt) {
-      hasAC = await fetchHasAC(issueKey);
-    }
-    const block = isDM && !exempt && !hasAC;
-    log("gate", { key: issueKey || null, hasAC, exempt, hasTask: !!hasTask, block });
-    return { block, hasAC, exempt };
-  }
-
-  function setSubmitDisabled(disabled) {
-    const f = getForm(); if (!f) return;
-    const btn = f.querySelector('[name="submitWorklogButton"]')
-             || f.querySelector('button[type="button"][name="submitWorklogButton"]');
-    if (!btn) return;
-    btn.disabled = !!disabled;
-    btn.setAttribute("aria-disabled", disabled ? "true" : "false");
-  }
-
-  function showWarning(show, text = WARNING_TEXT) {
-    const f = getForm(); if (!f) return;
-    const help = f.querySelector("#custom-workattr-help");
-    if (!help) return;
-    help.textContent = show ? text : "";
-    help.style.display = show ? "" : "none";
-  }
-
-  function clearSelect(select) {
-    select.innerHTML = '<option value="">Select an option...</option>';
-  }
-
-  function populateSelect(select, values) {
-    clearSelect(select);
-    if (!values || !values.length) return;
-    for (const v of values) {
-      const opt = document.createElement("option");
-      opt.value = v.value;
-      opt.textContent = v.value;
-      select.appendChild(opt);
-    }
-  }
-
-  /* --------- Intercept XHR to inject our attribute --------- */
-  (function patchXHR(){
-    const _open = XMLHttpRequest.prototype.open;
-    const _send = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(method, url){
-      this.__tempo_url = url || "";
-      this.__tempo_method = method || "";
-      return _open.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function(body){
-      try {
-        if (this.__tempo_method === "POST" && /\/rest\/tempo-timesheets\/\d+\/worklogs\/?$/i.test(this.__tempo_url || "")) {
-          if (typeof body === "string" && body.trim().startsWith("{")) {
-            const payload = JSON.parse(body);
-            if (!payload.attributes) payload.attributes = {};
-            if (lastSelectedValue) {
-              payload.attributes[ATTR.key] = lastSelectedValue;
-              log("✅ Injected into XHR POST", { [ATTR.key]: lastSelectedValue });
-            }
-            body = JSON.stringify(payload);
-          }
-        }
-      } catch (e) {
-        warn("inject error", e);
-      }
-      return _send.call(this, body);
-    };
-  })();
-
-  /* --------- Group bypass (KTAXA) --------- */
-  (async function detectKTAXA(){
-    try {
-      const r = await fetch("/rest/api/2/myself?expand=groups", { credentials: "same-origin" });
-      if (r.ok) {
-        const j = await r.json();
-        const items = j?.groups?.items || [];
-        BYPASS_FOR_KTAXA = items.some(g => (g.name || "") === KTAXA_GROUP);
-        if (BYPASS_FOR_KTAXA) log("bypass enabled for group", KTAXA_GROUP);
-      }
-    } catch (e) {
-      // ignore
-    }
-  })();
-
-  /* --------- Main form wiring --------- */
-  async function loadForCurrentForm() {
-    const form = getForm();
-    if (!form) return;
-
-    const formId = form.getAttribute("data-worklog-id") || "create";
-    if (wiredFormId === formId && form.__workattrWired) return; // already wired
-    form.__workattrWired = true;
-    wiredFormId = formId;
-
-    // If user is in KTAXA, keep native behavior and bail
-    if (BYPASS_FOR_KTAXA) {
-      showNativeTask(form, true);
-      removeCustomField(form);
-      return;
-    }
-
-    // Prepare UI
-    showNativeTask(form, false);
-    const host = ensureCustomField(form);
-    const select = host.querySelector("#custom-workattr-select");
-
-    // Reset state
-    lastSelectedValue = "";
-    clearSelect(select);
-    showWarning(false);
-    setSubmitDisabled(false);
-
-    // When the issue changes, re-fetch options and recompute gate
-    const onIssueChanged = debounce(async () => {
-      const key = getIssueKeyFromForm();
-      if (!key) { clearSelect(select); showWarning(false); setSubmitDisabled(false); return; }
-
-      log("▶ Fetching options for", key);
-      const values = await fetchOptions(key);
-      log("JSONP callback", values);
-      populateSelect(select, values);
-
-      // Recompute gate (Activity Code + exemptions)
-      const gate = await computeGate(key, !!select.value);
-      showWarning(gate.block);
-      setSubmitDisabled(gate.block);
-    }, 120);
-
-    // Change handlers
-    select.addEventListener("change", async () => {
-      lastSelectedValue = select.value || "";
-      const key = getIssueKeyFromForm();
-      const gate = await computeGate(key, !!lastSelectedValue);
-      showWarning(gate.block);
-      setSubmitDisabled(gate.block);
-    });
-
-    // Observe/attach to issue picker changes
-    const root = findIssuePickerRoot(form);
-    if (root) {
-      ["input","change","keydown","keyup","click"].forEach(ev =>
-        root.addEventListener(ev, onIssueChanged, { passive: true }));
-    }
-
-    // Also watch the form for structural changes (Log another, reopen, etc.)
-    const mo = new MutationObserver(onIssueChanged);
-    mo.observe(form, { subtree: true, childList: true, attributes: true, characterData: false });
-
-    // First paint
-    onIssueChanged();
-  }
-
-  // Simple debounce
-  function debounce(fn, wait) {
-    let t; return function(...a){ clearTimeout(t); t = setTimeout(() => fn.apply(this, a), wait); };
-  }
-
-  /* --------- Global observer: (re)wire when the dialog appears --------- */
-  const rootMO = new MutationObserver(() => {
-    const form = getForm();
-    if (form) loadForCurrentForm();
+/* JSONP helper */
+function fetchJSONP(url, param="callback"){
+  return new Promise((resolve,reject)=>{
+    const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
+    const scr = document.createElement("script");
+    const done = ()=>{ scr.remove(); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } };
+    window[cb] = (data)=>{ done(); resolve(data); };
+    scr.onerror = ()=>{ done(); reject(new Error("JSONP failed "+url)); };
+    scr.src = url + (url.includes("?")?"&":"?") + param + "=" + cb;
+    document.body.appendChild(scr);
   });
-  rootMO.observe(document.body, { childList: true, subtree: true });
+}
 
-  // If the dialog is already open on load
-  if (getForm()) loadForCurrentForm();
+/* REST: Jira myself (groups) */
+async function isUserKTAXA(){
+  if (S.ktaxa !== null) return S.ktaxa;
+  try{
+    const res = await fetch("/rest/api/2/myself?expand=groups");
+    if(!res.ok) throw 0;
+    const me = await res.json();
+    const groups = (me?.groups?.items||[]).map(g=>g.name||g);
+    S.ktaxa = groups.some(n=>String(n).toLowerCase() === CFG.KTAXA_GROUP.toLowerCase());
+  }catch(e){
+    W("Could not resolve user groups; defaulting to non-KTAXA.");
+    S.ktaxa = false;
+  }
+  return S.ktaxa;
+}
 
-})();
+/* REST: get Activity Code presence */
+async function hasActivityCode(issueKey){
+  try{
+    const res = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${CFG.AC_FIELD}`);
+    if(!res.ok) throw 0;
+    const js = await res.json();
+    const v = js?.fields?.[CFG.AC_FIELD];
+    return !!(v && String(v).trim());
+  }catch(e){
+    // Fail-open: if we cannot check, don't block the user
+    W("Activity Code check failed; allowing by default.");
+    return true;
+  }
+}
+
+/* Finds the worklog dialog */
+function getForm(){
+  return document.querySelector('#worklogForm');
+}
+
+/* Extracts the issue key shown in the dialog header/pill */
+function extractIssueKey(form){
+  if(!form) return null;
+  // 1) From header pill text "DM-12345: ..."
+  const header = form.querySelector('header') || form;
+  const txt = header.textContent || "";
+  const m = txt.match(/[A-Z][A-Z0-9_]+-\d+/i);
+  if (m) return m[0].toUpperCase();
+
+  // 2) Fallback: any "issueKey=" present in data attributes
+  const any = form.querySelector('[data-issue-key]');
+  if (any?.dataset?.issueKey) return any.dataset.issueKey.toUpperCase();
+
+  // 3) Nothing found
+  return null;
+}
+
+/* Locate native Task row (label "Task") */
+function findNativeTaskRow(form){
+  if(!form) return null;
+  // First try label[for="_Picker_"]
+  let lab = form.querySelector('label[for="_Picker_"]');
+  if (!lab) {
+    // robust fallback: any label whose text equals "Task"
+    lab = [...form.querySelectorAll('#worklogForm label')]
+      .find(l => l.textContent.trim().toLowerCase() === CFG.ATTR_LABEL.toLowerCase());
+  }
+  if(!lab) return null;
+  // label is in a column; row is up one level
+  return lab.closest('div')?.parentElement || lab.closest('div') || null;
+}
+
+/* Hide native Tempo Task field */
+function hideNativeTask(form){
+  const row = findNativeTaskRow(form);
+  if (!row) return;
+  row.classList.add('workattr-hide-native');
+  row.style.display = 'none';
+}
+
+/* Create (once) and return custom field host */
+function ensureCustomField(form){
+  let host = form.querySelector('#custom-workattr-host');
+  if (host) return host;
+
+  host = document.createElement('div');
+  host.id = 'custom-workattr-host';
+  host.className = 'custom-workattr-host';
+  host.style.marginTop = '6px';
+
+  const label = document.createElement('div');
+  label.textContent = CFG.ATTR_LABEL + " (from API)";
+  label.style.fontSize = '12px';
+  label.style.margin = '0 0 4px 2px';
+  label.style.color = 'var(--ds-text-subtlest, #6B778C)';
+
+  const wrap = document.createElement('div');
+  wrap.style.position = 'relative';
+
+  const sel = document.createElement('select');
+  sel.id = 'custom-workattr-select';
+  sel.style.width = '100%';
+  sel.style.height = '36px';
+  sel.style.border = '1px solid #DFE1E6';
+  sel.style.borderRadius = '4px';
+  sel.style.padding = '6px 8px';
+  sel.innerHTML = `<option value="">Select an option...</option>`;
+
+  wrap.appendChild(sel);
+  host.appendChild(label);
+  host.appendChild(wrap);
+
+  // Insert right after native row (or at end if not found)
+  const nativeRow = findNativeTaskRow(form);
+  if (nativeRow && nativeRow.parentElement) {
+    nativeRow.parentElement.insertBefore(host, nativeRow.nextSibling);
+  } else {
+    form.appendChild(host);
+  }
+
+  // Change handler – just store selection
+  sel.addEventListener('change', () => {
+    S.selection = sel.value || null;
+    L("Task selected:", S.selection);
+  });
+
+  return host;
+}
+
+/* Populate custom select with options */
+function renderOptions(host, options, preselect){
+  const sel = host.querySelector('#custom-workattr-select');
+  if (!sel) return;
+
+  const curr = sel.value;
+  const keep = preselect ?? curr ?? "";
+
+  sel.innerHTML = `<option value="">Select an option...</option>`;
+  for (const o of options || []) {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.value;
+    sel.appendChild(opt);
+  }
+
+  // restore last selection if possible
+  if (keep && [...sel.options].some(op => op.value === keep)) {
+    sel.value = keep;
+    S.selection = keep;
+  } else {
+    sel.value = "";
+    S.selection = null;
+  }
+}
+
+/* JSONP to ScriptRunner endpoint for options */
+async function fetchOptions(issueKey){
+  if (S.optionsCache.has(issueKey)) return S.optionsCache.get(issueKey);
+  const url = `${CFG.SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}`;
+  L("▶ Fetching options for", issueKey);
+  const data = await fetchJSONP(url);
+  const values = Array.isArray(data?.values) ? data.values : [];
+  S.optionsCache.set(issueKey, values);
+  return values;
+}
+
+/* Warning ribbon under our select */
+function ensureWarning(host){
+  let w = host.querySelector('.custom-workattr-warning');
+  if (!w) {
+    w = document.createElement('div');
+    w.className = 'custom-workattr-warning';
+    w.style.marginTop = '4px';
+    w.style.fontSize = '12px';
+    w.style.color = '#DE350B';
+    host.appendChild(w);
+  }
+  return w;
+}
+
+/* ------------------ Submit button hard-disable (hotfix) -------------- */
+function setSubmitDisabled(disabled) {
+  const form = getForm(); if (!form) return;
+  const btn = form.querySelector('[name="submitWorklogButton"]');
+  if (!btn) return;
+
+  const stop = (e) => {
+    e.stopImmediatePropagation();
+    e.stopPropagation();
+    e.preventDefault();
+    return false;
+  };
+
+  if (disabled) {
+    btn.disabled = true;
+    btn.setAttribute('disabled', '');
+    btn.setAttribute('data-state', 'not-active');
+    btn.setAttribute('aria-disabled', 'true');
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '0.6';
+
+    if (!btn.__workattrStopper) {
+      btn.__workattrStopper = stop;
+      btn.addEventListener('click', stop, true);
+    }
+    if (!btn.__workattrMO) {
+      btn.__workattrMO = new MutationObserver(() => {
+        if (!btn.disabled || btn.getAttribute('data-state') !== 'not-active') {
+          btn.disabled = true;
+          btn.setAttribute('disabled', '');
+          btn.setAttribute('data-state', 'not-active');
+          btn.setAttribute('aria-disabled', 'true');
+          btn.style.pointerEvents = 'none';
+          btn.style.opacity = '0.6';
+        }
+      });
+      btn.__workattrMO.observe(btn, { attributes: true, attributeFilter: ['disabled','data-state'] });
+    }
+  } else {
+    if (btn.__workattrMO) { btn.__workattrMO.disconnect(); btn.__workattrMO = null; }
+    if (btn.__workattrStopper) { btn.removeEventListener('click', btn.__workattrStopper, true); btn.__workattrStopper = null; }
+
+    btn.disabled = false;
+    btn.removeAttribute('disabled');
+    btn.setAttribute('data-state', 'active');
+    btn.setAttribute('aria-disabled', 'false');
+    btn.style.pointerEvents = '';
+    btn.style.opacity = '';
+  }
+}
+
+/* --------------- Payload injection (create/edit) --------------------- */
+const hookXHR = once(() => {
+  if (S.xhrHooked) return;
+  S.xhrHooked = true;
+
+  const open = XMLHttpRequest.prototype.open;
+  const send = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function(method, url, ...rest){
+    this.__workattr = { method: (method||"").toUpperCase(), url: String(url||"") };
+    return open.call(this, method, url, ...rest);
+  };
+
+  XMLHttpRequest.prototype.send = function(body){
+    try{
+      const {method,url} = this.__workattr || {};
+      const isTempoPOST = method==="POST" && /\/rest\/tempo-timesheets\/\d+\/worklogs\/?$/i.test(url||"");
+      const isTempoPUT  = method==="PUT"  && /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+/.test(url||"");
+
+      if ((isTempoPOST || isTempoPUT) && body) {
+        let js;
+        if (typeof body === "string") {
+          try { js = JSON.parse(body); } catch(e){}
+        } else if (body instanceof Blob) {
+          // let Tempo handle; do nothing
+        } else if (body instanceof ArrayBuffer) {
+          // do nothing
+        }
+
+        if (js && S.selection) {
+          js.attributes = js.attributes || {};
+          // use key form (preferred by Tempo)
+          js.attributes[CFG.ATTR_KEY] = S.selection;
+          body = JSON.stringify(js);
+          L("✅ Injected into XHR", {[CFG.ATTR_KEY]: S.selection});
+        }
+      }
+    }catch(e){/* ignore */}
+    return send.call(this, body);
+  };
+});
+
+/* ------------------ Main loader for the dialog ----------------------- */
+const loadForCurrentForm = throttle(async function(){
+  const form = getForm();
+  if (!form) return;
+
+  // KTAXA bypass
+  if (await isUserKTAXA()) {
+    W("KTAXA user detected — script bypassed (native Tempo).");
+    return;
+  }
+
+  // Extract issue key
+  const issueKey = extractIssueKey(form);
+  if (!issueKey) { W("issueKey not found"); return; }
+  if (S.lastIssueKey === issueKey) return; // nothing new
+  S.lastIssueKey = issueKey;
+
+  // Ensure hooks & custom field presence
+  hookXHR();
+  hideNativeTask(form);
+  const host = ensureCustomField(form);
+
+  // Grab ScriptRunner options
+  const opts = await fetchOptions(issueKey);
+  renderOptions(host, opts);
+
+  // Gate based on Activity Code when applicable
+  const inScope = CFG.GATE_PREFIX.test(issueKey);
+  const exempt  = CFG.EXEMPT_KEYS.includes(issueKey.toUpperCase());
+  let gate = { key: issueKey, hasAC: true, exempt, hasTask: !!S.selection, block: false };
+
+  if (inScope && !exempt) {
+    gate.hasAC = await hasActivityCode(issueKey);
+    gate.block = !gate.hasAC; // block if Activity Code missing
+  }
+
+  L("gate", gate);
+
+  // Warning + button state
+  const warnBox = ensureWarning(host);
+  if (gate.block) {
+    warnBox.textContent =
+      "Log Time is disabled since Activity Code is not yet available. " +
+      "Please select your Domain BAU demand to log it temporarily to BAU.";
+    warnBox.style.display = "block";
+  } else {
+    warnBox.textContent = "";
+    warnBox.style.display = "none";
+  }
+  setSubmitDisabled(gate.block);
+}, 120);
+
+/* ------------------ Observers (dialog lifecycle) --------------------- */
+const wireForm = once(() => {
+  const mo = new MutationObserver(debounce(loadForCurrentForm, 60));
+  mo.observe(document.body, { childList: true, subtree: true });
+  L("Tempo injector ready");
+});
+
+wireForm();
+
+/* Also react immediately when dialog first appears */
+document.addEventListener("click", (e)=>{
+  const t = e.target;
+  if (!t) return;
+  if (
+    t.closest('[name="logWorkButton"]') ||            // main “Log Time” button
+    t.closest('[data-testid="issue-picker"]') ||      // issue picker opened
+    t.closest('#worklogForm')                         // any click inside dialog
+  ){
+    setTimeout(loadForCurrentForm, 0);
+  }
+});
+
+/* Safety: on dialog close/reset */
+window.addEventListener("keydown", (e)=>{
+  if (e.key === "Escape") setTimeout(()=>{ S.lastIssueKey = null; }, 0);
+});
 </script>
