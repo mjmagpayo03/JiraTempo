@@ -1,13 +1,12 @@
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v4.3
-   * - Custom "Task (from API)" select for Tempo work attribute (id=14, key=_Picker_)
-   * - Injects selection into Tempo POST/PUT worklog payloads
-   * - Activity Code gate (customfield_17447) for DM-* except exemptions
-   * - Robust issueKey discovery (DOM + network sniff)
-   * - KTAXA bypass (use native)
-   * - Fixes: false Tempo "Something went wrong" & button-not-disabled race
+   * Tempo Work Attribute Helper — Core v4.4
+   * Fixes:
+   *  - Avoid injecting "attributes" into Tempo search POSTs (SearchParamsBean)
+   *  - Make disable stick even if the button remounts (sentinel)
+   * Keeps:
+   *  - KTAXA bypass, DM gating (AC check), JSONP Task, DOM+network issueKey discovery
    * ============================================================ */
 
   /* ---------- Config ---------- */
@@ -20,28 +19,28 @@
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set([
-    "DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"
-  ]);
+  const EXEMPT_ISSUES  = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
-  const OBSERVE_DEBOUNCE_MS = 120;        // UI debounce
-  const BUTTON_REAPPLY_MS   = 60;         // re-apply disable shortly after mounts
+  const OBSERVE_DEBOUNCE_MS = 120;
+  const BUTTON_REAPPLY_MS   = 60;
+  const SENTINEL_MS         = 2000;   // keep re-applying disable briefly
 
   /* ---------- State ---------- */
   const S = {
     ktaxa: null,
     lastIssueKey: null,
-    lastSeenIssueKey: null,   // sniffed from network if DOM hides it
-    lastOptionsKey: null,     // which issueKey the select currently shows
-    selection: "",            // chosen Task label
-    fetching: new Map(),      // issueKey -> Promise(options)
-    acCache: new Map(),       // issueKey -> boolean
+    lastSeenIssueKey: null,
+    lastOptionsKey: null,
+    selection: "",
+    fetching: new Map(),
+    acCache: new Map(),
     wiredXHR: false,
     wiredFetch: false,
     bodyMO: null,
     formMO: null,
     formMOStarted: false,
-    debounceTimer: null
+    debounceTimer: null,
+    sentinelTimer: null
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -56,7 +55,6 @@
       .custom-workattr-label{ font-weight:600; display:block; margin-bottom:6px; }
       .custom-workattr-select{ width:100%; height:40px; }
       .custom-workattr-warning{ color:#c00; font-size:.85rem; margin-top:6px; }
-      /* hard-disable safety */
       .workattr-disabled-btn{ pointer-events:none !important; opacity:.6 !important; }
     `;
     const el = document.createElement("style");
@@ -65,14 +63,14 @@
     document.head.appendChild(el);
   }
 
-  /* ---------- Helpers ---------- */
+  /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
-  const RX_WORKLOG_ENDPOINT = /\/rest\/tempo-(?:timesheets|core)\/\d+\/worklogs(?:\/\d+)?\/?$/i;
+  const isDM   = k => /^DM-\d+$/i.test(k || "");
 
   function getForm() { return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
-    if (S.ktaxa !== null) return S.ktaxa;
+    if (S.ktaxa !== null) return S.ktaxxa;
     try {
       const r = await fetch("/rest/api/2/myself?expand=groups");
       if (!r.ok) throw 0;
@@ -100,10 +98,6 @@
       const m = bag.match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
-    for (const el of form.querySelectorAll('button,[role="button"],[class*="issue"],[id*="issue"]')) {
-      const m = (el.textContent || '').match(RX_KEY);
-      if (m) return m[0].toUpperCase();
-    }
     const desc = form.querySelector('#comment, textarea[id*="comment"]');
     if (desc) {
       const m = (desc.value || '').match(RX_KEY);
@@ -113,14 +107,12 @@
     return m ? m[0].toUpperCase() : null;
   }
 
-  // Learn key from any network URL
   function sniffIssueKeyFromURL(url) {
     if (!url) return;
     let key = null;
     const mQ = url.match(/[?&]issueKey=([^&#]+)/i);
-    if (mQ) {
-      key = decodeURIComponent(mQ[1]);
-    } else {
+    if (mQ) key = decodeURIComponent(mQ[1]);
+    else {
       const m1 = url.match(/\/issue\/([A-Z][A-Z0-9]+-\d+)/i);
       key = (m1 && m1[1]) || (url.match(RX_KEY) || [])[0] || null;
     }
@@ -133,6 +125,7 @@
     }
   }
 
+  /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
     let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
@@ -155,7 +148,6 @@
     host = document.createElement("div");
     host.id = "custom-workattr-host";
     host.className = "custom-workattr-host";
-
     host.innerHTML = `
       <label class="custom-workattr-label" for="custom-workattr-select">${CUSTOM_LABEL}</label>
       <select id="custom-workattr-select" class="custom-workattr-select">
@@ -163,14 +155,12 @@
       </select>
       <div id="custom-workattr-warning" class="custom-workattr-warning" style="display:none;">${AC_WARN_TEXT}</div>
     `;
-
     row.parentElement?.insertBefore(host, row.nextSibling);
     return host;
   }
 
   function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
   function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
-
   function getSubmitBtn(form) {
     return form?.querySelector('[name="submitWorklogButton"]')
         || [...(form?.querySelectorAll('button') || [])]
@@ -192,23 +182,35 @@
     if (preselect && keep.has(preselect)) select.value = preselect;
   }
 
+  /* ---------- Warning + Disable ---------- */
   function setSubmitBlocked(form, blocked) {
     const btn = getSubmitBtn(form);
-    if (!btn) return;
-    // Apply now…
-    btn.disabled = !!blocked;
-    btn.setAttribute("data-state", blocked ? "not-active" : "active");
-    btn.setAttribute("aria-disabled", String(!!blocked));
-    btn.classList.toggle("workattr-disabled-btn", !!blocked);
-    // …and re-apply shortly in case Tempo remounts the button
-    setTimeout(() => {
-      const b = getSubmitBtn(form);
-      if (!b) return;
-      b.disabled = !!blocked;
-      b.setAttribute("data-state", blocked ? "not-active" : "active");
-      b.setAttribute("aria-disabled", String(!!blocked));
-      b.classList.toggle("workattr-disabled-btn", !!blocked);
-    }, BUTTON_REAPPLY_MS);
+    if (btn) {
+      btn.disabled = !!blocked;
+      btn.setAttribute("data-state", blocked ? "not-active" : "active");
+      btn.setAttribute("aria-disabled", String(!!blocked));
+      btn.classList.toggle("workattr-disabled-btn", !!blocked);
+    }
+    // Sentinel to re-apply while React remounts button
+    if (S.sentinelTimer) { clearInterval(S.sentinelTimer); S.sentinelTimer = null; }
+    if (blocked) {
+      const start = Date.now();
+      S.sentinelTimer = setInterval(() => {
+        const f = getForm();
+        if (!f) return;
+        const b = getSubmitBtn(f);
+        if (b) {
+          b.disabled = true;
+          b.setAttribute("data-state", "not-active");
+          b.setAttribute("aria-disabled", "true");
+          b.classList.add("workattr-disabled-btn");
+        }
+        if (Date.now() - start > SENTINEL_MS) {
+          clearInterval(S.sentinelTimer);
+          S.sentinelTimer = null;
+        }
+      }, 120);
+    }
   }
 
   /* ---------- Data ---------- */
@@ -231,14 +233,12 @@
   async function fetchOptionsFor(issueKey) {
     if (!issueKey) return [];
     if (S.fetching.has(issueKey)) return S.fetching.get(issueKey);
-
     const p = (async () => {
       const url = `${JSONP_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}`;
       const data = await jsonp(url).catch(() => ({}));
       const list = Array.isArray(data?.values) ? data.values : [];
       return list.map(v => ({ key: v.key, value: v.value }));
     })();
-
     S.fetching.set(issueKey, p);
     return p;
   }
@@ -246,7 +246,6 @@
   async function hasActivityCode(issueKey) {
     if (!issueKey) return false;
     if (S.acCache.has(issueKey)) return S.acCache.get(issueKey);
-
     const ok = await (async () => {
       try {
         const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`);
@@ -255,16 +254,13 @@
         const v = j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length > 0);
       } catch {
-        // Don’t block on failures
+        // Don't block on failures
         return true;
       }
     })();
-
     S.acCache.set(issueKey, ok);
     return ok;
   }
-
-  const isDM = k => /^DM-\d+$/i.test(k || "");
 
   /* ---------- Gate ---------- */
   async function applyGate(form) {
@@ -274,8 +270,8 @@
     const key = S.lastIssueKey;
     if (!key) { setSubmitBlocked(form, false); return; }
 
-    const sel = getCustomSelect(form);
-    const hasTask = !!(sel && sel.value);
+    const select = getCustomSelect(form);
+    const hasTask = !!(select && select.value);
     let block = false;
 
     if (isDM(key) && !EXEMPT_ISSUES.has(key)) {
@@ -292,8 +288,8 @@
   async function loadForCurrentForm() {
     const form = getForm();
     if (!form) return;
-
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
+
     S.debounceTimer = setTimeout(async () => {
       const issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey;
       if (!issueKey) { warn("issueKey not found"); return; }
@@ -304,7 +300,6 @@
       }
 
       if (await isKTAXA()) {
-        // Unhide native & remove our host; no blocking
         findNativeTaskRow(form)?.classList.remove("workattr-hide-native");
         form.querySelector("#custom-workattr-host")?.remove();
         setSubmitBlocked(form, false);
@@ -316,16 +311,12 @@
       if (!host) return;
 
       const select = getCustomSelect(form);
-      const warnBox = getWarnBox(form);
-
       if (S.lastOptionsKey !== issueKey) {
-        log("Fetching options for", issueKey);
         const options = await fetchOptionsFor(issueKey).catch(() => []);
         S.lastOptionsKey = issueKey;
         fillSelect(select, options, S.selection);
       }
 
-      // bind change once
       if (!select.__workattrBound) {
         select.__workattrBound = true;
         select.addEventListener("change", () => {
@@ -335,8 +326,6 @@
       }
 
       await applyGate(form);
-
-      // Button may mount after we ran; enforce once more
       setTimeout(() => applyGate(form), BUTTON_REAPPLY_MS);
     }, OBSERVE_DEBOUNCE_MS);
   }
@@ -345,28 +334,37 @@
   function wireObservers() {
     if (!S.bodyMO) {
       S.bodyMO = new MutationObserver(() => {
-        // form appear/disappear
         const form = getForm();
         if (form && !S.formMOStarted) {
-          if (!S.formMO) {
-            S.formMO = new MutationObserver(() => loadForCurrentForm());
-          }
+          if (!S.formMO) S.formMO = new MutationObserver(() => loadForCurrentForm());
           S.formMO.observe(form, { childList: true, subtree: true, characterData: true });
           S.formMOStarted = true;
           loadForCurrentForm();
         } else if (!form && S.formMOStarted) {
-          // dialog closed
-          S.formMO?.disconnect();
+          S.formMO.disconnect();
           S.formMOStarted = false;
         }
       });
       S.bodyMO.observe(document.body, { childList: true, subtree: true });
     }
-    // also attempt immediately
     loadForCurrentForm();
   }
 
-  /* ---------- Network wiring (tightened) ---------- */
+  /* ---------- Injection guards ---------- */
+  function looksLikeCreateUpdate(bodyObj) {
+    // Tempo create/update bodies always include started/timeSpentSeconds (or originTaskId) etc.
+    if (!bodyObj || typeof bodyObj !== "object") return false;
+    if ("started" in bodyObj) return true;
+    if ("timeSpentSeconds" in bodyObj) return true;
+    if ("originTaskId" in bodyObj) return true;
+    if ("issueId" in bodyObj) return true;
+    // Conversely, search bodies typically have 'from', 'to', 'worker', 'projectKey' etc.
+    if ("from" in bodyObj || "to" in bodyObj) return false;
+    if ("offset" in bodyObj || "limit" in bodyObj) return false;
+    return false;
+  }
+
+  /* ---------- Network wiring ---------- */
   function wireNetwork() {
     // XHR
     if (!S.wiredXHR) {
@@ -376,46 +374,39 @@
 
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
         try { sniffIssueKeyFromURL(url); } catch {}
-        // Only exact worklog endpoints
-        this.__tempoInject = !!(method && url && /POST|PUT/i.test(method) && RX_WORKLOG_ENDPOINT.test(url));
+        this.__url = url || "";
+        this.__method = (method || "").toUpperCase();
         return _open.call(this, method, url, ...rest);
       };
 
       XMLHttpRequest.prototype.send = function(body) {
         try {
-          if (this.__tempoInject && body && typeof body === "string") {
+          // Only mutate KTAXA=false, method POST/PUT, and body looks like create/update
+          if (S.ktaxa === true) return _send.call(this, body);
+
+          const isMutating = /POST|PUT/.test(this.__method || "");
+          if (!isMutating || !body || typeof body !== "string") {
+            return _send.call(this, body);
+          }
+
+          let obj;
+          try { obj = JSON.parse(body); } catch { obj = null; }
+
+          if (looksLikeCreateUpdate(obj)) {
             const form = getForm();
-            const sel = getCustomSelect(form);
-            const chosen = sel?.value || S.selection || "";
+            const sel = form && getCustomSelect(form);
+            const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
-              const data = JSON.parse(body);
-              // Inject into attributes (map)
-              data.attributes = data.attributes || {};
-              data.attributes[ATTR_KEY] = chosen;
-              body = JSON.stringify(data);
+              obj.attributes = obj.attributes || {};
+              obj.attributes[ATTR_KEY] = chosen;
+              body = JSON.stringify(obj);
               log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
             }
           }
         } catch (e) {
           // swallow to avoid breaking Tempo internals
-          warn("XHR inject error (ignored):", e);
+          warn("XHR inject skipped due to error:", e);
         }
-
-        // Observe result to clear state (reduce Tempo UI error flashes)
-        this.addEventListener('loadend', () => {
-          if (this.__tempoInject) {
-            // After a successful save/update, don’t immediately re-touch the form
-            // Let Tempo recycle its dialog; we’ll re-detect via observers if reopened
-            setTimeout(() => {
-              const form = getForm();
-              if (form) {
-                // re-evaluate gating on the recycled form
-                applyGate(form);
-              }
-            }, 150);
-          }
-        });
-
         return _send.call(this, body);
       };
     }
@@ -426,26 +417,30 @@
       const _fetch = window.fetch;
       window.fetch = async (input, init = {}) => {
         try {
-          const url  = typeof input === "string" ? input : input?.url || "";
+          const url  = typeof input === "string" ? input : (input?.url || "");
+          const meth = (init?.method || "GET").toUpperCase();
           sniffIssueKeyFromURL(url);
 
-          const meth = (init?.method || "GET").toUpperCase();
-          const shouldInject = RX_WORKLOG_ENDPOINT.test(url) && /POST|PUT/.test(meth);
+          if (S.ktaxa === true) return _fetch(input, init);
 
-          if (shouldInject && init?.body && typeof init.body === "string") {
-            const form = getForm();
-            const sel = getCustomSelect(form);
-            const chosen = sel?.value || S.selection || "";
-            if (chosen) {
-              const data = JSON.parse(init.body);
-              data.attributes = data.attributes || {};
-              data.attributes[ATTR_KEY] = chosen;
-              init = { ...init, body: JSON.stringify(data) };
-              log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
+          if (/POST|PUT/.test(meth) && init?.body && typeof init.body === "string") {
+            let obj;
+            try { obj = JSON.parse(init.body); } catch { obj = null; }
+
+            if (looksLikeCreateUpdate(obj)) {
+              const form = getForm();
+              const sel = form && getCustomSelect(form);
+              const chosen = (sel && sel.value) || S.selection || "";
+              if (chosen) {
+                obj.attributes = obj.attributes || {};
+                obj.attributes[ATTR_KEY] = chosen;
+                init = { ...init, body: JSON.stringify(obj) };
+                log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
+              }
             }
           }
         } catch (e) {
-          warn("fetch inject error (ignored):", e);
+          warn("fetch inject skipped due to error:", e);
         }
         return _fetch(input, init);
       };
@@ -455,8 +450,8 @@
   /* ---------- Boot ---------- */
   function boot() {
     onceStyle();
-    wireNetwork();     // tight endpoint match avoids false errors
-    wireObservers();   // watches dialog open/change
+    wireNetwork();
+    wireObservers();
     log("Ready");
   }
 
