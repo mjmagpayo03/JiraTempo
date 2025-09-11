@@ -1,7 +1,7 @@
 <script>
 (() => {
 /* ------------ Config ------------ */
-const DEBUG = false;                         // set true for verbose console
+const DEBUG = false;
 const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
 
 const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
@@ -14,33 +14,68 @@ const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet availa
 const S = {
   formOpen:false,
   currentIssueKey:null,
+  lastKeySig:null,
   userPicking:false,
   savingUntil:0,
   cache:Object.create(null),
   pendingFetch:Object.create(null),
   acCache:Object.create(null),
   acPending:Object.create(null),
-  lastGateSig:null,
-  lastBtnDisabled:null,
   btnObserver:null,
-  headerObserver:null,
+  keyObserver:null,
   btnInterval:null,
   lastEnforceAt:0,
+  lastGateSig:null,
+  lastBtnDisabled:null,
 };
 
-/* ------------ Utils ------------ */
+/* ------------ Helpers ------------ */
 const now = () => Date.now();
 const debounce = (fn, ms) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
 const throttle = (fn, ms) => { let l=0; return (...a)=>{ const n=now(); if (n-l>=ms){ l=n; fn(...a); } }; };
+const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
 
 const getForm = ()=> document.querySelector("#worklogForm");
-const getIssueKeyFromForm = () => {
+
+/* ---- robust issue key scraping ---- */
+function findIssuePickerRoot(form){
+  // Try common wrappers near the top of the dialog
+  return form.querySelector('[aria-haspopup][aria-expanded]')                                      // react-select button
+      || form.querySelector('[role="combobox"]')                                                   // generic combobox
+      || form.querySelector('[data-test*="issue"], [data-testid*="issue"]')                        // data-test ids
+      || form.querySelector('header + *')                                                          // the first block after header
+      || form;                                                                                     // fallback (safe but noisier)
+}
+function extractKeyFromNode(root){
+  const RE = /[A-Z][A-Z0-9]+-\d+/;
+  // 1) direct text on the root
+  const t0 = (root.textContent || "").trim();
+  let m = RE.exec(t0);
+  if (m) return m[0].toUpperCase();
+
+  // 2) scan shallow descendants first (fast)
+  const kids = [...root.querySelectorAll(":scope > *")];
+  for (const el of kids){
+    const txt = (el.textContent || "").trim();
+    m = RE.exec(txt);
+    if (m) return m[0].toUpperCase();
+  }
+
+  // 3) broader scan with early stop (still bounded)
+  const nodes = [...root.querySelectorAll("*")].slice(0, 200); // cap to avoid heavy reflow
+  for (const el of nodes){
+    if (!el.firstElementChild && el.textContent){
+      m = RE.exec(el.textContent);
+      if (m) return m[0].toUpperCase();
+    }
+  }
+  return null;
+}
+function getIssueKeyFromForm(){
   const f = getForm(); if (!f) return null;
-  const h = f.querySelector("h2")?.textContent || "";
-  const m = h.match(/[A-Z][A-Z0-9]+-\d+/);
-  return m ? m[0].toUpperCase() : null;
-};
-const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
+  const root = findIssuePickerRoot(f);
+  return extractKeyFromNode(root);
+}
 
 /* ---- submit button control ---- */
 function findSubmitButtons(){
@@ -114,7 +149,7 @@ function fillOptions(values){
   const sel = getCustomSelect(); if (!sel) return;
   const prev = sel.value;
   const sig  = JSON.stringify(values?.map(v=>v.value) || []);
-  if (sel.dataset.sig === sig) return;   // avoid churn
+  if (sel.dataset.sig === sig) return;
   sel.dataset.sig = sig;
   sel.innerHTML = `<option value="">Select an option...</option>`;
   (values||[]).forEach(({value})=>{
@@ -157,7 +192,6 @@ function getActivityStatus(issueKey){
     .finally(()=>{ delete S.acPending[issueKey]; });
   S.acPending[issueKey]=p; return p;
 }
-
 async function loadForIssue(issueKey){
   if (!issueKey) return;
   if (!S.cache[issueKey]) await jsonpFetch(issueKey);
@@ -188,7 +222,7 @@ function stopButtonInterval(){ if (S.btnInterval){ clearInterval(S.btnInterval);
 
 const enforce = async () => {
   const f = getForm(); if (!f) return;
-  if (now()-S.lastEnforceAt < 400) return;
+  if (now()-S.lastEnforceAt < 250) return; // quicker but still bounded
   S.lastEnforceAt = now();
 
   const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
@@ -203,23 +237,27 @@ const enforce = async () => {
   if (block){ startButtonInterval(); startButtonObserver(); }
   else { stopButtonInterval(); }
 };
-const enforceSoon = debounce(enforce, 150);
+const enforceSoon = debounce(enforce, 120);
 
-/* ---- observers & lifecycle ---- */
-function startHeaderObserver(){
+/* ---- observers ---- */
+function startKeyObserver(){
   const f = getForm(); if (!f) return;
-  const header = f.querySelector("header") || f;
-  if (S.headerObserver){ try{S.headerObserver.disconnect();}catch{} S.headerObserver=null; }
+  const root = findIssuePickerRoot(f);
+  if (S.keyObserver){ try{S.keyObserver.disconnect();}catch{} S.keyObserver=null; }
   const obs = new MutationObserver(throttle(()=>{
-    const k = getIssueKeyFromForm();
-    if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
-      S.currentIssueKey = k;
-      loadForIssue(k);
-      enforceSoon();
+    const key = getIssueKeyFromForm();
+    const sig = key || "none";
+    if (sig !== S.lastKeySig){
+      S.lastKeySig = sig;
+      if (key && key !== S.currentIssueKey && !S.userPicking && now() >= S.savingUntil){
+        S.currentIssueKey = key;
+        loadForIssue(key);
+        enforceSoon();
+      }
     }
-  }, 250));
-  obs.observe(header, { subtree:true, childList:true, characterData:true });
-  S.headerObserver = obs;
+  }, 150));
+  obs.observe(root, { subtree:true, childList:true, characterData:true });
+  S.keyObserver = obs;
 }
 function startButtonObserver(){
   const btns = findSubmitButtons(); if (!btns.length) return;
@@ -231,6 +269,7 @@ function startButtonObserver(){
   S.btnObserver = obs;
 }
 
+/* ---- lifecycle ---- */
 function initForm(){
   hideNativeTask();
   ensureCustomField();
@@ -241,7 +280,7 @@ function initForm(){
 
   const k = getIssueKeyFromForm();
   if (k){ S.currentIssueKey = k; loadForIssue(k); }
-  startHeaderObserver();
+  startKeyObserver();
   startButtonObserver();
   enforceSoon();
 }
@@ -270,12 +309,12 @@ setInterval(()=>{
     if (open) { initForm(); }
     else {
       S.currentIssueKey = null;
-      stopButtonInterval();
       if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-      if (S.headerObserver){ try{S.headerObserver.disconnect();}catch{} S.headerObserver=null; }
+      if (S.keyObserver){ try{S.keyObserver.disconnect();}catch{} S.keyObserver=null; }
+      stopButtonInterval();
     }
   }
-}, 800);
+}, 700);
 
 /* ---- inject attr & block POST ---- */
 const _fetch = window.fetch;
@@ -308,6 +347,6 @@ css.textContent = `
 `;
 document.head.appendChild(css);
 
-LOG("Banner v3.9.4 options-restore loaded");
+LOG("Banner v3.9.5 key-detect loaded");
 })();
 </script>
