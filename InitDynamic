@@ -1,12 +1,12 @@
 <script>
 (() => {
 /* ------------ Config ------------ */
-const DEBUG = false;                         // flip to true for verbose logs
+const DEBUG = false;                         // set true for verbose console
 const LOG = (...a) => DEBUG && console.log("[WorkAttr]", ...a);
 
 const TEMPO_ATTR   = { id: 14, key: "_Picker_", label: "Task" };
 const SR_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
-const AC_FIELD     = "customfield_17447";    // Activity Code
+const AC_FIELD     = "customfield_17447";
 const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
 const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
 
@@ -14,7 +14,6 @@ const WARNING_TEXT = "Log Time is disabled since Activity Code is not yet availa
 const S = {
   formOpen:false,
   currentIssueKey:null,
-  choosingIssue:false,           // NEW: pause while listbox is open
   userPicking:false,
   savingUntil:0,
   cache:Object.create(null),
@@ -22,16 +21,17 @@ const S = {
   acCache:Object.create(null),
   acPending:Object.create(null),
   lastGateSig:null,
-  lastEnforceAt:0,
-  lastBtnDisabled:null,          // NEW: avoid redundant DOM writes
+  lastBtnDisabled:null,
   btnObserver:null,
-  dialogObserver:null,
-  btnInterval:null,              // sticky disable loop
+  headerObserver:null,
+  btnInterval:null,
+  lastEnforceAt:0,
 };
 
-/* ------------ Helpers ------------ */
+/* ------------ Utils ------------ */
 const now = () => Date.now();
-const throttle = (fn, ms) => { let t=0; return (...a)=>{ if (now()-t>=ms){ t=now; fn(...a);} }; };
+const debounce = (fn, ms) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
+const throttle = (fn, ms) => { let l=0; return (...a)=>{ const n=now(); if (n-l>=ms){ l=n; fn(...a); } }; };
 
 const getForm = ()=> document.querySelector("#worklogForm");
 const getIssueKeyFromForm = () => {
@@ -41,13 +41,6 @@ const getIssueKeyFromForm = () => {
   return m ? m[0].toUpperCase() : null;
 };
 const hasDMPrefix = k => !!(k && /^DM-\d+$/i.test(k));
-
-/* --- detect issue listbox open/close (pauses our work while user browses) --- */
-function detectListboxOpen(){
-  const f = getForm(); if (!f) return false;
-  // react-select renders a list with role="listbox" inside the dialog while open
-  return !!f.querySelector('[role="listbox"]');
-}
 
 /* ---- submit button control ---- */
 function findSubmitButtons(){
@@ -60,8 +53,8 @@ function findSubmitButtons(){
   return guess ? [guess] : [];
 }
 function setSubmitDisabled(disabled){
-  if (S.lastBtnDisabled === disabled) return; // avoid churn
-  S.lastBtnDisabled = disabled;
+  if (S.lastBtnDisabled === !!disabled) return;
+  S.lastBtnDisabled = !!disabled;
   const btns = findSubmitButtons();
   btns.forEach(btn => {
     const d = !!disabled;
@@ -75,11 +68,11 @@ function setSubmitDisabled(disabled){
   });
 }
 
-/* ---- hide native field & inject custom ---- */
+/* ---- hide native Task & inject our custom one ---- */
 function findNativeTaskRow(){
   const f = getForm(); if (!f) return null;
   const label = f.querySelector('label[for="_Picker_"]')
-          || [...f.querySelectorAll("label")].find(l => /\bTask\b/i.test(l.textContent||""));
+            || [...f.querySelectorAll("label")].find(l => /\bTask\b/i.test(l.textContent||""));
   if (!label) return null;
   return label.closest("div")?.parentElement || label.closest("div");
 }
@@ -104,11 +97,11 @@ function ensureCustomField(){
       <div id="custom-workattr-warning" style="display:none;color:#d92929;margin-top:6px;font-size:12px;"></div>
     `;
     const sel = host.querySelector("#custom-workattr-select");
-    const arm = ()=>{ S.userPicking = true; setTimeout(()=>S.userPicking=false, 900); };
+    const arm = ()=>{ S.userPicking = true; setTimeout(()=>S.userPicking=false, 800); };
     ["mousedown","focus","click"].forEach(e => sel.addEventListener(e, arm, true));
     sel.addEventListener("change", ()=>{
       window._tempoSelectedWorkAttr = sel.value ? { [TEMPO_ATTR.key]: sel.value } : null;
-      enforce();
+      enforceSoon();
     });
   }
   return host;
@@ -121,7 +114,7 @@ function fillOptions(values){
   const sel = getCustomSelect(); if (!sel) return;
   const prev = sel.value;
   const sig  = JSON.stringify(values?.map(v=>v.value) || []);
-  if (sel.dataset.sig === sig) return;
+  if (sel.dataset.sig === sig) return;   // avoid churn
   sel.dataset.sig = sig;
   sel.innerHTML = `<option value="">Select an option...</option>`;
   (values||[]).forEach(({value})=>{
@@ -137,7 +130,7 @@ function jsonpFetch(issueKey, timeoutMs=8000){
   const p = new Promise((resolve)=>{
     const cb = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
     const sc = document.createElement("script"); let done=false;
-    const cleanup = ()=>{ if (done) return; done=true; delete window[cb]; sc.remove(); };
+    const cleanup = ()=>{ if (done) return; done=true; try{ delete window[cb]; }catch{} try{ sc.remove(); }catch{} };
     const timer = setTimeout(()=>{ cleanup(); resolve({values:[]}); }, timeoutMs);
     window[cb] = (data)=>{ clearTimeout(timer); cleanup(); resolve(data||{values:[]}); };
     sc.onerror=()=>{ clearTimeout(timer); cleanup(); resolve({values:[]}); };
@@ -146,6 +139,7 @@ function jsonpFetch(issueKey, timeoutMs=8000){
   }).then(data=>{
     S.cache[issueKey] = Array.isArray(data?.values) ? data.values : [];
     delete S.pendingFetch[issueKey];
+    LOG("options loaded", issueKey, S.cache[issueKey].length);
     return S.cache[issueKey];
   });
   S.pendingFetch[issueKey] = p;
@@ -163,13 +157,14 @@ function getActivityStatus(issueKey){
     .finally(()=>{ delete S.acPending[issueKey]; });
   S.acPending[issueKey]=p; return p;
 }
-const loadForIssue = throttle(async (issueKey)=>{
+
+async function loadForIssue(issueKey){
   if (!issueKey) return;
   if (!S.cache[issueKey]) await jsonpFetch(issueKey);
   fillOptions(S.cache[issueKey]||[]);
-}, 350);
+}
 
-/* ---- gate + enforcement ---- */
+/* ---- gating ---- */
 async function computeGate(){
   const key = S.currentIssueKey || getIssueKeyFromForm();
   const sel = getCustomSelect();
@@ -186,19 +181,14 @@ function startButtonInterval(){
   if (S.btnInterval) return;
   S.btnInterval = setInterval(()=>{
     if (!getForm() || !window._workattr_gate_block){ stopButtonInterval(); return; }
-    setSubmitDisabled(true);   // re-apply to any freshly swapped button
-  }, 700);                      // slower to reduce churn
+    setSubmitDisabled(true);
+  }, 1000);
 }
 function stopButtonInterval(){ if (S.btnInterval){ clearInterval(S.btnInterval); S.btnInterval=null; } }
 
-async function enforce(){
+const enforce = async () => {
   const f = getForm(); if (!f) return;
-
-  // NEW: pause while user is browsing the issue listbox
-  S.choosingIssue = detectListboxOpen();
-  if (S.choosingIssue) return;
-
-  if (now() - S.lastEnforceAt < 400) return;  // slower cadence
+  if (now()-S.lastEnforceAt < 400) return;
   S.lastEnforceAt = now();
 
   const { key, hasTask, hasAC, exempt, block, warn } = await computeGate();
@@ -212,20 +202,31 @@ async function enforce(){
   setSubmitDisabled(block);
   if (block){ startButtonInterval(); startButtonObserver(); }
   else { stopButtonInterval(); }
-}
+};
+const enforceSoon = debounce(enforce, 150);
 
 /* ---- observers & lifecycle ---- */
-function startDialogObserver(){
+function startHeaderObserver(){
   const f = getForm(); if (!f) return;
-  if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
-  const obs = new MutationObserver(() => enforce());
-  obs.observe(f, { subtree:true, childList:true, attributes:true });
-  S.dialogObserver = obs;
+  const header = f.querySelector("header") || f;
+  if (S.headerObserver){ try{S.headerObserver.disconnect();}catch{} S.headerObserver=null; }
+  const obs = new MutationObserver(throttle(()=>{
+    const k = getIssueKeyFromForm();
+    if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
+      S.currentIssueKey = k;
+      loadForIssue(k);
+      enforceSoon();
+    }
+  }, 250));
+  obs.observe(header, { subtree:true, childList:true, characterData:true });
+  S.headerObserver = obs;
 }
 function startButtonObserver(){
   const btns = findSubmitButtons(); if (!btns.length) return;
   if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-  const obs = new MutationObserver(()=>{ if (window._workattr_gate_block) setSubmitDisabled(true); });
+  const obs = new MutationObserver(()=>{
+    if (window._workattr_gate_block) setSubmitDisabled(true);
+  });
   btns.forEach(b => obs.observe(b, { attributes:true, attributeFilter:["disabled","data-state","class"] }));
   S.btnObserver = obs;
 }
@@ -237,14 +238,15 @@ function initForm(){
   S.lastBtnDisabled = null;
   S.savingUntil = 0;
   S.userPicking = false;
+
   const k = getIssueKeyFromForm();
-  if (k && k !== S.currentIssueKey){ S.currentIssueKey = k; loadForIssue(k); }
-  startDialogObserver();
+  if (k){ S.currentIssueKey = k; loadForIssue(k); }
+  startHeaderObserver();
   startButtonObserver();
-  enforce();
+  enforceSoon();
 }
 
-/* ---- global guards (visual fallback and hard block) ---- */
+/* ---- global block guards ---- */
 function blockEventIfNeeded(ev){
   if (!window._workattr_gate_block) return;
   ev.preventDefault(); ev.stopPropagation();
@@ -260,7 +262,7 @@ document.addEventListener("keydown",(ev)=>{
   if (ev.key === "Enter" && getForm()) blockEventIfNeeded(ev);
 }, true);
 
-/* ---- monitor open/close & selection changes ---- */
+/* ---- open/close watcher ---- */
 setInterval(()=>{
   const open = !!getForm();
   if (open !== S.formOpen){
@@ -270,20 +272,10 @@ setInterval(()=>{
       S.currentIssueKey = null;
       stopButtonInterval();
       if (S.btnObserver){ try{S.btnObserver.disconnect();}catch{} S.btnObserver=null; }
-      if (S.dialogObserver){ try{S.dialogObserver.disconnect();}catch{} S.dialogObserver=null; }
-    }
-  } else if (open){
-    // only react to *actual* key change, and only when not browsing the listbox
-    if (!detectListboxOpen()){
-      const k = getIssueKeyFromForm();
-      if (k && k !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
-        S.currentIssueKey = k;
-        loadForIssue(k);
-        enforce();
-      }
+      if (S.headerObserver){ try{S.headerObserver.disconnect();}catch{} S.headerObserver=null; }
     }
   }
-}, 900);   // slower overall polling
+}, 800);
 
 /* ---- inject attr & block POST ---- */
 const _fetch = window.fetch;
@@ -316,6 +308,6 @@ css.textContent = `
 `;
 document.head.appendChild(css);
 
-LOG("Banner v3.9.2 light-poll loaded");
+LOG("Banner v3.9.4 options-restore loaded");
 })();
 </script>
