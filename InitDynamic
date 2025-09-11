@@ -2,96 +2,78 @@
 (() => {
   const LOG = (...a) => console.log("[WorkAttr]", ...a);
 
-  // ---------------- CONFIG ----------------
+  /* =========================
+     CONFIG
+  ========================== */
   const TEMPO_ATTR = { id: 14, key: "_Picker_", label: "Task" };
   const SR_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]); // inc. DM-36382
+  // issues that should never show the Activity Code warning
+  const EXEMPT_ISSUES = new Set(["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"]);
 
-  // ---------------- STATE -----------------
+  /* =========================
+     STATE
+  ========================== */
   const S = {
     formOpen: false,
     currentIssueKey: null,
-    lastFilledKey: null,
-    cache: Object.create(null),          // issueKey -> [{key,value},...]
-    userPicking: false,                   // while user interacts with our select
-    savingUntil: 0,                       // pause window after clicking “Log Time/Update”
-    host: null,
+    cache: Object.create(null),            // issueKey -> [{key,value},...]
+    acCache: Object.create(null),          // issueKey -> boolean (has Activity Code)
+    acPending: Object.create(null),        // issueKey -> Promise<boolean>
+    userPicking: false,
+    savingUntil: 0,
   };
 
-  // -------------- UTILS -------------------
+  /* =========================
+     UTILS
+  ========================== */
   const debounce = (fn, ms=250) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
   const now = () => Date.now();
 
-  // Find issue key currently in the dialog
-  function getIssueKeyFromForm() {
-    const form = document.querySelector("#worklogForm");
-    if (!form) return null;
+  function getForm(){ return document.querySelector("#worklogForm"); }
+  function getSubmitBtn(){
+    const f = getForm();
+    return f && f.querySelector('button[name="submitWorklogButton"]');
+  }
+  function setSubmitDisabled(disabled){
+    const btn = getSubmitBtn();
+    if (!btn) return;
+    btn.disabled = !!disabled;
+    btn.setAttribute("data-state", disabled ? "not-active" : "active");
+  }
 
-    // Look for something that contains "KEY-1234"
-    const m = (form.textContent || "").match(/[A-Z][A-Z0-9]+-\d+/);
+  function getIssueKeyFromForm() {
+    const f = getForm();
+    if (!f) return null;
+    const t = f.textContent || "";
+    const m = t.match(/[A-Z][A-Z0-9]+-\d+/);
     return m ? m[0].toUpperCase() : null;
   }
+  function hasDMPrefix(key){ return !!(key && /^DM-\d+$/i.test(key)); }
 
-  // Should we show the “Activity Code” warning?
-  function shouldWarn(issueKey) {
-    return !!(issueKey && /^DM-\d+$/i.test(issueKey) && !EXEMPT_ISSUES.has(issueKey));
-  }
-
-  function ensureWarningEl(form) {
-    let warn = form.querySelector('#custom-workattr-warning');
-    if (!warn) {
-      warn = document.createElement('div');
-      warn.id = 'custom-workattr-warning';
-      warn.style.cssText = 'color:#d92929;margin:6px 0 0 0;font-size:12px;display:none;';
-      // put it just under our custom field if present, else at form end
-      const anchor = form.querySelector('#custom-workattr-host') || form.lastElementChild;
-      (anchor?.parentElement || form).appendChild(warn);
-    }
-    return warn;
-  }
-
-  function setWarning(issueKey) {
-    const form = document.querySelector("#worklogForm");
-    if (!form) return;
-    const el = ensureWarningEl(form);
-    const show = shouldWarn(issueKey);
-    el.style.display = show ? 'block' : 'none';
-    if (show) {
-      el.textContent = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
-    }
-  }
-
+  // native Task row (for hiding)
   function findNativeTaskRow() {
-    const form = document.querySelector("#worklogForm");
-    if (!form) return null;
-    const label = form.querySelector('label[for="_Picker_"]')
-      || [...form.querySelectorAll('label')].find(l => /\bTask\b/i.test(l.textContent||""));
+    const f = getForm(); if (!f) return null;
+    const label = f.querySelector('label[for="_Picker_"]')
+               || [...f.querySelectorAll('label')].find(l => /\bTask\b/i.test(l.textContent||""));
     if (!label) return null;
     return label.closest('div')?.parentElement || label.closest('div');
   }
-
-  function hideNativeTask() {
+  function hideNativeTask(){
     const row = findNativeTaskRow();
-    if (row && !row.classList.contains('workattr-hide-native')) {
-      row.classList.add('workattr-hide-native');
-    }
+    if (row && !row.classList.contains('workattr-hide-native')) row.classList.add('workattr-hide-native');
   }
 
-  function ensureCustomField() {
-    const form = document.querySelector("#worklogForm");
-    if (!form) return null;
-
-    let host = form.querySelector('#custom-workattr-host');
-    if (!host) {
+  function ensureCustomField(){
+    const f = getForm(); if (!f) return null;
+    let host = f.querySelector('#custom-workattr-host');
+    if (!host){
       host = document.createElement('div');
       host.id = 'custom-workattr-host';
       host.className = 'sc-bwANAz';
       const ref = findNativeTaskRow();
-      if (ref && ref.parentElement) {
-        ref.parentElement.insertBefore(host, ref);
-      } else {
-        form.appendChild(host);
-      }
+      if (ref && ref.parentElement) ref.parentElement.insertBefore(host, ref);
+      else f.appendChild(host);
+
       host.innerHTML = `
         <label style="display:block;margin-bottom:4px;">Task (from API)</label>
         <select id="custom-workattr-select" style="width:100%;height:32px;">
@@ -99,111 +81,70 @@
         </select>
       `;
       const sel = host.querySelector('#custom-workattr-select');
-
-      // Freeze refresh while interacting
-      const arm = () => {
-        S.userPicking = true;
-        setTimeout(() => (S.userPicking = false), 900);
-      };
-      ['mousedown','focus','click'].forEach(evt => sel.addEventListener(evt, arm, true));
+      const arm = () => { S.userPicking = true; setTimeout(()=> S.userPicking=false, 900); };
+      ['mousedown','focus','click'].forEach(e => sel.addEventListener(e, arm, true));
 
       sel.addEventListener('change', () => {
         const v = sel.value || "";
-        if (!v) return;
-        window._tempoSelectedWorkAttr = { [TEMPO_ATTR.key]: v };
-        LOG("Selected:", v);
+        window._tempoSelectedWorkAttr = v ? { [TEMPO_ATTR.key]: v } : null;
+        // disable button if no Task
+        refreshGateState(); // re-evaluate button disabled
       });
 
-      // Pause any re-fetch while saving
-      const submitBtn = form.querySelector('button[name="submitWorklogButton"]');
-      if (submitBtn && !submitBtn.dataset.workattrHooked) {
-        submitBtn.dataset.workattrHooked = "1";
-        submitBtn.addEventListener('click', () => {
-          S.savingUntil = now() + 4000;   // give Tempo time to post & close
-        }, true);
+      const submit = getSubmitBtn();
+      if (submit && !submit.dataset.workattrHooked){
+        submit.dataset.workattrHooked = "1";
+        submit.addEventListener('click', () => { S.savingUntil = now() + 4000; }, true);
       }
     }
-
-    S.host = host;
     return host;
   }
+  function getCustomSelect(){
+    const f = getForm(); return f && f.querySelector('#custom-workattr-select');
+  }
 
-  function fillOptions(issueKey, values) {
-    const host = ensureCustomField();
-    if (!host) return;
+  function fillOptions(issueKey, values){
+    const host = ensureCustomField(); if (!host) return;
+    const sel = getCustomSelect(); if (!sel) return;
 
-    const sel = host.querySelector('#custom-workattr-select');
     const prev = sel.value;
-
-    // Only rebuild if options actually changed
-    const keySig = JSON.stringify(values?.map(v => v.value) || []);
-    if (sel.dataset.sig === keySig) {
-      return;
-    }
-    sel.dataset.sig = keySig;
+    const sig = JSON.stringify(values?.map(v=>v.value) || []);
+    if (sel.dataset.sig === sig) return;
+    sel.dataset.sig = sig;
 
     sel.innerHTML = `<option value="">Select an option...</option>`;
-    (values || []).forEach(({ value }) => {
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = value;
-      sel.appendChild(opt);
+    (values || []).forEach(({value})=>{
+      const o = document.createElement('option');
+      o.value = value; o.textContent = value;
+      sel.appendChild(o);
     });
 
-    // Keep previous selection if still valid
-    if (prev && [...sel.options].some(o => o.value === prev)) {
-      sel.value = prev;
-    } else {
-      sel.value = "";
-      window._tempoSelectedWorkAttr = null;
-    }
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+    else { sel.value = ""; window._tempoSelectedWorkAttr = null; }
+
+    refreshGateState(); // update button state when options change
   }
 
-  // JSONP with timeout protection
-  function jsonpFetch(issueKey, timeoutMs = 8000) {
-    return new Promise((resolve) => {
+  // Lightweight JSONP to ScriptRunner
+  function jsonpFetch(issueKey, timeoutMs=8000){
+    return new Promise((resolve)=>{
       const cb = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
-      const scr = document.createElement('script');
-      let done = false;
+      const sc = document.createElement('script');
+      let done=false;
+      const cleanup=()=>{ if(done) return; done=true; delete window[cb]; sc.remove(); };
 
-      const cleanup = () => {
-        if (done) return;
-        done = true;
-        delete window[cb];
-        scr.remove();
-      };
+      const t = setTimeout(()=>{ cleanup(); resolve({values:[]}); }, timeoutMs);
+      window[cb] = (data)=>{ clearTimeout(t); cleanup(); resolve(data||{values:[]}); };
+      sc.onerror = ()=>{ clearTimeout(t); cleanup(); resolve({values:[]}); };
 
-      const to = setTimeout(() => {
-        cleanup();
-        resolve({ values: [] });
-      }, timeoutMs);
-
-      window[cb] = (data) => {
-        clearTimeout(to);
-        cleanup();
-        resolve(data || { values: [] });
-      };
-
-      scr.onerror = () => {
-        clearTimeout(to);
-        cleanup();
-        resolve({ values: [] });
-      };
-
-      scr.src = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
-      document.body.appendChild(scr);
+      sc.src = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
+      document.body.appendChild(sc);
     });
   }
 
-  const loadForIssue = debounce(async (issueKey) => {
-    if (!issueKey) return;
-    if (S.userPicking || now() < S.savingUntil) return;
-
-    // Use cache if present
-    if (S.cache[issueKey]) {
-      fillOptions(issueKey, S.cache[issueKey]);
-      return;
-    }
+  const loadForIssue = debounce(async (issueKey)=>{
+    if (!issueKey || S.userPicking || now() < S.savingUntil) return;
+    if (S.cache[issueKey]) { fillOptions(issueKey, S.cache[issueKey]); return; }
 
     LOG("Fetching options for", issueKey);
     const data = await jsonpFetch(issueKey);
@@ -212,75 +153,132 @@
     fillOptions(issueKey, values);
   }, 200);
 
-  function initFormOnceOpen() {
-    const form = document.querySelector("#worklogForm");
-    if (!form) return;
+  /* =========================
+     ACTIVITY CODE CHECK
+  ========================== */
+  function ensureWarningEl(){
+    const f = getForm(); if (!f) return null;
+    let el = f.querySelector('#custom-workattr-warning');
+    if (!el){
+      el = document.createElement('div');
+      el.id = 'custom-workattr-warning';
+      el.style.cssText='color:#d92929;margin:6px 0 0 0;font-size:12px;display:none;';
+      const anchor = f.querySelector('#custom-workattr-host') || f.lastElementChild;
+      (anchor?.parentElement || f).appendChild(el);
+    }
+    return el;
+  }
+  function setWarningVisible(show){
+    const el = ensureWarningEl(); if (!el) return;
+    el.style.display = show ? 'block' : 'none';
+    if (show){
+      el.textContent = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
+    }
+  }
 
+  // fetch /rest/api/2/issue/{key}?fields=customfield_17447 (cached + timeout)
+  function getActivityStatus(issueKey){
+    if (issueKey in S.acCache) return Promise.resolve(!!S.acCache[issueKey]);
+    if (S.acPending[issueKey]) return S.acPending[issueKey];
+
+    const url = `/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=customfield_17447`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 7000);
+
+    const p = fetch(url, {signal: ctrl.signal})
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        clearTimeout(timer);
+        const val = j && j.fields ? j.fields.customfield_17447 : null;
+        const has = !!(val && String(val).trim());
+        S.acCache[issueKey] = has;
+        return has;
+      })
+      .catch(()=>{ clearTimeout(timer); S.acCache[issueKey] = false; return false; })
+      .finally(()=>{ delete S.acPending[issueKey]; });
+
+    S.acPending[issueKey] = p;
+    return p;
+  }
+
+  async function refreshGateState(){
+    const key = S.currentIssueKey || getIssueKeyFromForm();
+    const sel = getCustomSelect();
+    const hasTask = !!(sel && sel.value);
+
+    let warn = false;
+    if (hasDMPrefix(key) && !EXEMPT_ISSUES.has(key)) {
+      const hasAC = await getActivityStatus(key);
+      warn = !hasAC;
+    }
+
+    setWarningVisible(warn);
+    setSubmitDisabled(warn || !hasTask);
+  }
+
+  /* =========================
+     DIALOG LIFECYCLE
+  ========================== */
+  function initFormOnceOpen(){
     hideNativeTask();
     ensureCustomField();
 
     const key = getIssueKeyFromForm();
-    if (key && key !== S.currentIssueKey) {
+    if (key && key !== S.currentIssueKey){
       S.currentIssueKey = key;
-      setWarning(key);
       loadForIssue(key);
+      refreshGateState();   // compute warning + disable button
     }
   }
 
-  // A light polling loop – avoids heavy MutationObserver churn
-  setInterval(() => {
-    const form = document.querySelector("#worklogForm");
-    const open = !!form;
-    if (open !== S.formOpen) {
-      S.formOpen = open;
-      if (open) {
-        // reset per-open flags
-        S.userPicking = false;
-        S.savingUntil = 0;
+  // Light polling loop – stable under heavy DOM churn
+  setInterval(()=>{
+    const f = !!getForm();
+    if (f !== S.formOpen){
+      S.formOpen = f;
+      if (f){
+        S.userPicking = false; S.savingUntil = 0;
         initFormOnceOpen();
       } else {
-        // clear transient state when dialog closes
         S.currentIssueKey = null;
-        S.host = null;
       }
-    } else if (open) {
-      // while open, check if issue changed (e.g., user picked a different issue)
+    } else if (f){
       const key = getIssueKeyFromForm();
-      if (key && key !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking) {
+      if (key && key !== S.currentIssueKey && now() >= S.savingUntil && !S.userPicking){
         S.currentIssueKey = key;
-        setWarning(key);
         loadForIssue(key);
+        refreshGateState();
       }
     }
   }, 400);
 
-  // Inject attribute on POST but never throw
-  const origFetch = window.fetch;
-  window.fetch = function(url, opts, ...rest) {
-    try {
-      if (typeof url === "string" && url.includes("/rest/tempo-timesheets/4/worklogs/")) {
-        if (opts && typeof opts.body === "string" && window._tempoSelectedWorkAttr) {
+  // Inject attribute to Tempo POST
+  const _fetch = window.fetch;
+  window.fetch = function(url, opts, ...rest){
+    try{
+      if (typeof url === "string" && url.includes("/rest/tempo-timesheets/4/worklogs/")){
+        if (opts && typeof opts.body === "string" && window._tempoSelectedWorkAttr){
           const chosen = window._tempoSelectedWorkAttr[TEMPO_ATTR.key];
-          if (chosen) {
-            try {
+          if (chosen){
+            try{
               const body = JSON.parse(opts.body);
               body.attributes = body.attributes || {};
-              body.attributes[TEMPO_ATTR.id] = chosen; // v4 expects { "14": "value" }
+              body.attributes[TEMPO_ATTR.id] = chosen;
               opts.body = JSON.stringify(body);
               LOG("✅ Injected into XHR POST", body.attributes);
-            } catch (_) { /* ignore parse errors, pass-through */ }
+            }catch(e){}
           }
         }
       }
-    } catch (_) { /* harden against any unexpected shape */ }
-    return origFetch.apply(this, [url, opts, ...rest]);
+    }catch(e){}
+    return _fetch.apply(this, [url, opts, ...rest]);
   };
 
-  // Style to hide native row
+  // minimal CSS
   const css = document.createElement('style');
   css.textContent = `.workattr-hide-native{display:none!important} #custom-workattr-host{margin-top:8px}`;
   document.head.appendChild(css);
 
-  LOG("Banner v3.2 freeze-safe loaded");
+  LOG("Banner v3.3 – activity-aware warning + disable loaded");
 })();
 </script>
