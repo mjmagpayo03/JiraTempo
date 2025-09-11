@@ -1,0 +1,287 @@
+<style>
+  #announcement-banner { background:#9fd9b4; }
+  .workattr-hide-native { display:none !important; }
+  .workattr-warning { margin-top:6px; font-size:12px; color:#c13; line-height:1.2; }
+</style>
+
+<script>
+(function () {
+/* =======================
+   Tempo Work Attribute – Core v4.0.5
+   - Stable on Edit (re-hydrates)
+   - Anti-race (form token)
+   - KTAXA bypass + Admin warning
+   ======================= */
+
+const LOG='[WorkAttr]';
+const ATTR_ID=14, ATTR_KEY='_Picker_', ATTR_NAME='Task';
+const SR_URL='/rest/scriptrunner/latest/custom/tempoWorkType';
+const TEMPO_WL='/rest/tempo-timesheets/4/worklogs';
+const KTAXA='DM-KTAXA';
+const DM_EXEMPT=new Set(['DM-36231','DM-41282','DM-41281','DM-41280']);
+const ISSUE_RE=/[A-Z][A-Z0-9]+-\d+/g;
+
+const S={
+  isKTAXA:false,
+  formToken:0,        // increments per wire
+  selectedIssueKey:null,
+  selectedValue:null,
+  lastOptions:[],
+  customSelectEl:null,
+  wired:false,
+  bodyObs:false,
+  worklogCache:new Map(),
+  lastNoKeyLog:0,
+  debId:null,
+};
+
+/* ---------- utils ---------- */
+const log=(...a)=>console.log(LOG,...a);
+const warn=(...a)=>console.warn(LOG,...a);
+const vis=el=>!!el && (()=>{const cs=getComputedStyle(el); if(cs.display==='none'||cs.visibility==='hidden'||+cs.opacity===0) return false; const r=el.getBoundingClientRect(); return !!(r.width||r.height);})();
+const q=(r,s)=>r.querySelector(s);
+const qa=(r,s)=>Array.from(r.querySelectorAll(s));
+const mk=(t,a={},...k)=>{const e=document.createElement(t); for(const [x,v] of Object.entries(a)){ if(x==='class') e.className=v; else if(x==='style') Object.assign(e.style,v); else e.setAttribute(x,v);} k.forEach(n=>e.append(n)); return e;};
+const resetSelect=()=>{ S.selectedValue=null; if(S.customSelectEl) S.customSelectEl.value=''; };
+
+/* ---------- group ---------- */
+(async()=>{
+  try{
+    const r=await fetch('/rest/api/2/myself?expand=groups',{credentials:'same-origin'});
+    if(r.ok){
+      const me=await r.json();
+      S.isKTAXA=(me?.groups?.items||[]).some(g=>g.name===KTAXA);
+      log('KTAXA?',S.isKTAXA);
+    }
+  }catch(e){warn('group resolve failed',e);}
+})();
+
+/* ---------- JSONP options w/ token ---------- */
+function fetchOptions(issueKey, token){
+  return new Promise(res=>{
+    const cb='tempoWorkAttrCB_'+Math.random().toString(36).slice(2);
+    window[cb]=payload=>{
+      try{
+        // ignore late responses belonging to a stale form
+        if(token!==S.formToken) return;
+        res(payload?.values||[]);
+      }finally{ try{delete window[cb]}catch{}; s.remove(); }
+    };
+    const s=document.createElement('script');
+    s.src=`${SR_URL}?issueKey=${encodeURIComponent(issueKey)}&callback=${cb}`;
+    s.onerror=()=>res([]);
+    document.body.appendChild(s);
+  });
+}
+
+/* ---------- DOM helpers ---------- */
+function formRoot(){
+  const el=document.getElementById('worklogForm');
+  return vis(el)?el:null;
+}
+
+function findNativeTaskRow(form){
+  let lab=q(form,`label[for="${ATTR_KEY}"]`);
+  if(!lab){
+    lab=qa(form,'label').find(l=>/^\s*Task\s*$/i.test((l.textContent||'').trim()));
+  }
+  if(!lab) return null;
+  return lab.closest('.sc-bKhNmF') || lab.closest('div') || null;
+}
+
+function hideNativeTask(form){
+  const row=findNativeTaskRow(form);
+  if(row) row.classList.add('workattr-hide-native');
+}
+
+function ensureCustomField(form){
+  let host=q(form,'#custom-workattr-host');
+  if(host) return host;
+
+  hideNativeTask(form);
+  host=mk('div',{id:'custom-workattr-host',class:'sc-bKhNmF LBFFT',style:{marginTop:'6px'}},
+    mk('div',{class:'sc-cgFpzT eGniAY'}, mk('label',{class:'sc-jvLaUc cSDnQh sc-jhfVAM lauuLP'}, `${ATTR_NAME} (from API)`)),
+    mk('div',{class:'sc-jDDxOa geIDWX'},
+      S.customSelectEl=mk('select',{id:'custom-workattr-select',class:'sc-cTQhss gwKKdf',style:{width:'100%',height:'36px'}},
+        mk('option',{value:''},'Select an option...')),
+      mk('div',{id:'workattr-warning',class:'workattr-warning',style:{display:'none'}})
+    )
+  );
+
+  let ref=findNativeTaskRow(form);
+  if(ref && ref.parentElement) ref.parentElement.insertBefore(host, ref.nextSibling);
+  else form.appendChild(host);
+
+  S.customSelectEl.addEventListener('change',()=>{ S.selectedValue=S.customSelectEl.value||null; });
+  return host;
+}
+
+function renderOptions(opts){
+  S.lastOptions=opts||[];
+  if(!S.customSelectEl) return;
+  S.customSelectEl.innerHTML='';
+  S.customSelectEl.append(mk('option',{value:''},'Select an option...'));
+  S.lastOptions.forEach(o=>S.customSelectEl.append(mk('option',{value:o.value},o.value)));
+  if(S.selectedValue){
+    const ok=S.lastOptions.some(o=>o.value===S.selectedValue);
+    S.customSelectEl.value=ok?S.selectedValue:'';
+    if(!ok) S.selectedValue=null;
+  }
+}
+
+/* ---------- key detection ---------- */
+function scanForKey(root){
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  while(w.nextNode()){
+    const t=(w.currentNode.nodeValue||'').toUpperCase();
+    const m=t.match(ISSUE_RE);
+    if(m) return m[0];
+  }
+  return null;
+}
+
+function keyFromCreate(form){
+  const cands=[
+    '[name^="selected_issue_"]','[data-testid*="selected_issue"]','[data-test*="selected_issue"]',
+    '[id^="selected_issue_"]','input[name="issueKey"]','input[id="issueKey"]'
+  ];
+  for(const s of cands){
+    const el=q(form,s);
+    const t=(el?.value||el?.textContent||'').toUpperCase();
+    const m=t.match(ISSUE_RE); if(m) return m[0];
+  }
+  const a=q(form,'a[href*="/browse/"]');
+  if(a){
+    const m=a.getAttribute('href').toUpperCase().match(/\/BROWSE\/([A-Z0-9-]+)/);
+    if(m) return m[1];
+  }
+  return scanForKey(form);
+}
+
+async function keyFromEdit(form){
+  const d=q(form,'#comment');
+  const txt=(d?.value||d?.textContent||'').toUpperCase();
+  const m=txt.match(ISSUE_RE);
+  if(m) return m[0];
+
+  const scan=scanForKey(form);
+  if(scan) return scan;
+
+  const wlId=form.getAttribute('data-worklog-id');
+  if(!wlId) return null;
+  if(S.worklogCache.has(wlId)) return S.worklogCache.get(wlId);
+  try{
+    const w=await fetch(`${TEMPO_WL}/${wlId}`,{credentials:'same-origin'}); if(!w.ok) throw 0;
+    const j=await w.json(); const issueId=j.originTaskId||j.issueId||j.issue?.id;
+    if(!issueId) throw 0;
+    const r=await fetch(`/rest/api/2/issue/${issueId}?fields=key`,{credentials:'same-origin'}); if(!r.ok) throw 0;
+    const i=await r.json(); const k=(i.key||i.fields?.key||'').toUpperCase();
+    if(k){ S.worklogCache.set(wlId,k); return k; }
+  }catch(e){/*ignore*/}
+  return null;
+}
+
+/* ---------- admin warning ---------- */
+async function applyWarning(form, issueKey){
+  const el=q(form,'#workattr-warning'); if(!el) return;
+  if(S.isKTAXA || !/^DM-\d+$/i.test(issueKey) || DM_EXEMPT.has(issueKey.toUpperCase())){
+    el.style.display='none'; el.textContent=''; return;
+  }
+  try{
+    const r=await fetch(`/rest/api/2/issue/${issueKey}?fields=customfield_17447`,{credentials:'same-origin'});
+    if(!r.ok) throw 0;
+    const j=await r.json(); const has=!!(j?.fields?.customfield_17447);
+    if(!has){
+      el.textContent='Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.';
+      el.style.display='block';
+    }else{ el.style.display='none'; el.textContent=''; }
+  }catch{ el.style.display='none'; el.textContent=''; }
+}
+
+/* ---------- core loader (tokenised) ---------- */
+async function _load(){
+  const form=formRoot(); if(!form) return;
+  if(S.isKTAXA) return;
+
+  ensureCustomField(form);
+  const token=S.formToken;          // capture token for this run
+  const isEdit=!!form.getAttribute('data-worklog-id');
+  const key = isEdit ? (await keyFromEdit(form)) : keyFromCreate(form);
+
+  if(!key){
+    const now=Date.now(); if(now-S.lastNoKeyLog>3000){ warn('issueKey not found'); S.lastNoKeyLog=now; }
+    return;
+  }
+  if(token!==S.formToken) return;   // form changed while awaiting
+
+  if(S.selectedIssueKey===key && S.lastOptions.length){
+    applyWarning(form,key); return;
+  }
+
+  S.selectedIssueKey=key;
+  log('Fetching options for', key);
+  const opts=await fetchOptions(key, token);
+  if(token!==S.formToken) return;   // late JSONP from older key -> ignore
+  renderOptions(opts);
+  applyWarning(form,key);
+}
+
+function load(){ clearTimeout(S.debId); S.debId=setTimeout(_load,140); }
+
+/* ---------- network inject ---------- */
+(function hijack(){
+  const of=window.fetch;
+  window.fetch=function(resource, init){
+    try{
+      if(!S.isKTAXA && resource && typeof resource==='string' && resource.startsWith(TEMPO_WL) && init && typeof init.body==='string' && S.selectedValue){
+        const obj=JSON.parse(init.body); obj.attributes=obj.attributes||{}; obj.attributes[ATTR_KEY]=S.selectedValue; init.body=JSON.stringify(obj);
+        log('✅ Injected (fetch):',{[ATTR_KEY]:S.selectedValue});
+      }
+    }catch(e){}
+    return of.apply(this,arguments);
+  };
+  const xo=XMLHttpRequest.prototype.open, xs=XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open=function(m,u){ this.__isTempo= (typeof u==='string' && u.startsWith(TEMPO_WL)); return xo.apply(this,arguments); };
+  XMLHttpRequest.prototype.send=function(b){
+    if(!S.isKTAXA && this.__isTempo && typeof b==='string' && S.selectedValue){
+      try{ const o=JSON.parse(b); o.attributes=o.attributes||{}; o.attributes[ATTR_KEY]=S.selectedValue; arguments[0]=JSON.stringify(o);
+           log('✅ Injected (XHR):',{[ATTR_KEY]:S.selectedValue}); }catch(e){}
+    }
+    return xs.apply(this,arguments);
+  };
+})();
+
+/* ---------- wiring & observers ---------- */
+function wire(){
+  const form=formRoot(); if(!form || S.wired) return;
+  S.wired=true; S.formToken++;       // new session for this dialog instance
+  resetSelect(); S.selectedIssueKey=null;
+
+  load();
+
+  // Observe aggressive re-rendering of the dialog (Edit does this)
+  const mo=new MutationObserver(()=>{
+    const f=formRoot();
+    if(!f){ mo.disconnect(); S.wired=false; return; }
+    // On any subtree change, re-ensure host and reload (debounced)
+    ensureCustomField(f);
+    load();
+  });
+  mo.observe(form,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','aria-hidden']});
+
+  // Description change in Edit can toggle our key parsing
+  const comment=q(form,'#comment'); if(comment) comment.addEventListener('input',load);
+}
+
+function watchBody(){
+  if(S.bodyObs) return; S.bodyObs=true;
+  const mo=new MutationObserver(()=>{
+    const f=formRoot();
+    if(f && !S.wired) wire();
+  });
+  mo.observe(document.body,{childList:true,subtree:true});
+}
+
+watchBody();
+})();
+</script>
