@@ -1,332 +1,417 @@
 <script>
-/* ========================================================================
-   Tempo Task (from API) + Activity Code gate
-   Core v4.1.2 — robust dialog/button detection
-   ======================================================================== */
-const CFG = {
-  ATTR_ID: 14,
-  ATTR_KEY: "_Picker_",
-  ATTR_LABEL: "Task",
-  SR_ENDPOINT: "/rest/scriptrunner/latest/custom/tempoWorkType",
-  AC_FIELD: "customfield_17447",
-  EXEMPT_KEYS: ["DM-36231","DM-41282","DM-41281","DM-41280","DM-36382"],
-  GATE_PREFIX: /^DM-\d+$/i,
-  KTAXA_GROUP: "DM-KTAXA",
-  LOG: true
-};
+/* =======================================================================
+ * Tempo Work Attribute helper — Banner Script  (V4.2)
+ * - Uses ScriptRunner endpoint: /rest/scriptrunner/latest/custom/tempoWorkType?issueKey=${issue.key}
+ * - Injects/controls Tempo Dynamic Dropdown work attribute (“Task”, key=_Picker_, id=14)
+ * - KTAXA group bypass supported
+ * - Activity Code check: customfield_17447 (DM-* only, with exemptions)
+ * - Disables Log Time/Update when AC missing and no Task chosen
+ * - Robust issue-key extraction for both Create and Edit dialogs
+ * ======================================================================= */
 
-const L=(...a)=>CFG.LOG&&console.log("[WorkAttr]",...a);
-const W=(...a)=>CFG.LOG&&console.warn("[WorkAttr]",...a);
+(function () {
+  const LOG_PREFIX = '[WorkAttr]';
+  const ATTR_ID = 14;              // Tempo work attribute id
+  const ATTR_KEY = '_Picker_';     // Tempo work attribute key (string key!)
+  const ATTR_NAME = 'Task';        // Display name (you renamed it to "Task")
+  const SR_ENDPOINT = '/rest/scriptrunner/latest/custom/tempoWorkType';
+  const AC_FIELD = 'customfield_17447'; // "Activity Code"
+  const EXEMPT_ISSUES = new Set([
+    'DM-36231','DM-41282','DM-41281','DM-41280','DM-36382' // add/remove as needed
+  ]);
+  const K_TAXA_GROUP = 'DM-KTAXA'; // If user belongs here, bypass everything
 
-const S={
-  ktaxa:null,
-  lastIssueKey:null,
-  optionsCache:new Map(),
-  selection:null,
-  xhrHooked:false
-};
+  // Defensive single-boot
+  if (window.__tempoWorkAttrBooted) return;
+  window.__tempoWorkAttrBooted = true;
 
-const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
-function once(fn){let r=false,v;return(...a)=>r?v:(r=true,(v=fn(...a))); }
-function debounce(fn,ms=120){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);} }
-function throttle(fn,ms=120){let b=false,late;return(...a)=>{if(b){late=a;return;}b=true;fn(...a);setTimeout(()=>{b=false;if(late){const x=late;late=null;fn(...x)}},ms);}}
+  // Small logger helpers
+  const log  = (...a) => console.log(`${LOG_PREFIX}`, ...a);
+  const warn = (...a) => console.warn(`${LOG_PREFIX}`, ...a);
 
-/* -------------------- JSONP helper -------------------- */
-function fetchJSONP(url,param="callback"){
-  return new Promise((resolve,reject)=>{
-    const cb="tempoWorkAttrCB_"+Math.random().toString(36).slice(2);
-    const s=document.createElement("script");
-    const done=()=>{s.remove();try{delete window[cb]}catch(e){window[cb]=undefined}};
-    window[cb]=(data)=>{done();resolve(data)};
-    s.onerror=()=>{done();reject(new Error("JSONP failed "+url))};
-    s.src=url+(url.includes("?")?"&":"?")+param+"="+cb;
-    document.body.appendChild(s);
-  });
-}
-
-/* -------------------- REST helpers ------------------- */
-async function isUserKTAXA(){
-  if(S.ktaxa!==null) return S.ktaxa;
-  try{
-    const r=await fetch("/rest/api/2/myself?expand=groups");
-    const j=await r.json();
-    const groups=(j?.groups?.items||[]).map(g=>g.name||g);
-    S.ktaxa=groups.some(n=>String(n).toLowerCase()===CFG.KTAXA_GROUP.toLowerCase());
-  }catch(e){ W("Group check failed; default non-KTAXA"); S.ktaxa=false; }
-  return S.ktaxa;
-}
-async function hasActivityCode(issueKey){
-  try{
-    const r=await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${CFG.AC_FIELD}`);
-    if(!r.ok) throw 0;
-    const j=await r.json();
-    const v=j?.fields?.[CFG.AC_FIELD];
-    return !!(v && String(v).trim());
-  }catch(e){ W("AC check failed; allow"); return true; }
-}
-
-/* -------------------- Robust DOM finders -------------- */
-// Try several ways to get the open log-work dialog container.
-function getForm(){
-  // 1) The classic id
-  let root=document.querySelector('#worklogForm');
-  if(root) return root;
-
-  // 2) From submit button location
-  const btn=document.querySelector('button[name="submitWorklogButton"]');
-  if(btn){
-    root = btn.closest('#worklogForm') ||
-           btn.closest('[role="dialog"]') ||
-           btn.closest('.aui-dialog2') ||
-           btn.closest('div[id]') || btn.closest('div');
-    if(root) return root;
-  }
-
-  // 3) From a known input in the form (Worked* / Date*)
-  const worked=document.querySelector('#timeSpentSeconds,[data-testid="form-prettytime-input"]');
-  if(worked){
-    root = worked.closest('#worklogForm') ||
-           worked.closest('[role="dialog"]') ||
-           worked.closest('.aui-dialog2') ||
-           worked.closest('div[id]') || worked.closest('div');
-    if(root) return root;
-  }
-
-  // 4) Last resort: a visible dialog that has heading “Log Time”
-  for(const dlg of document.querySelectorAll('[role="dialog"], .aui-dialog2, .modal, .css-1e2kq0x')){
-    const h = dlg.querySelector('h2, [data-testid="dialog-title"]');
-    if(h && /log\s*time/i.test(h.textContent||"")) return dlg;
-  }
-  return null;
-}
-
-// Extract an issue key by scanning a compact part of the dialog.
-function extractIssueKey(form){
-  if(!form) return null;
-
-  // Header / selected issue pill
-  const header = form.querySelector('header, [data-testid="issue-picker"], [data-testid="selected-issue"]') || form;
-  const m1 = header.textContent && header.textContent.match(/[A-Z][A-Z0-9_]+-\d+/i);
-  if(m1) return m1[0].toUpperCase();
-
-  // Carefully walk text nodes but limit steps
-  const walker=document.createTreeWalker(form, NodeFilter.SHOW_TEXT, null);
-  let steps=0, key=null;
-  while(walker.nextNode() && steps<4000){
-    const t=walker.currentNode.nodeValue;
-    const m=t && t.match(/[A-Z][A-Z0-9_]+-\d+/i);
-    if(m){ key=m[0].toUpperCase(); break; }
-    steps++;
-  }
-  return key;
-}
-
-/* Find native Task row (so we can hide it) */
-function findNativeTaskRow(form){
-  let lab=form.querySelector('label[for="_Picker_"]');
-  if(!lab){
-    lab=[...form.querySelectorAll('label')].find(l => l.textContent.trim().toLowerCase()===CFG.ATTR_LABEL.toLowerCase());
-  }
-  if(!lab) return null;
-  return lab.closest('div')?.parentElement || lab.closest('div') || null;
-}
-function hideNativeTask(form){
-  const row=findNativeTaskRow(form);
-  if(row){ row.classList.add('workattr-hide-native'); row.style.display='none'; }
-}
-
-/* Create / ensure our custom select lives under the Task area */
-function ensureCustomField(form){
-  let host=form.querySelector('#custom-workattr-host');
-  if(host) return host;
-
-  host=document.createElement('div');
-  host.id='custom-workattr-host';
-  host.style.marginTop='6px';
-
-  const label=document.createElement('div');
-  label.textContent=CFG.ATTR_LABEL+" (from API)";
-  label.style.fontSize='12px';
-  label.style.margin='0 0 4px 2px';
-  label.style.color='var(--ds-text-subtlest,#6B778C)';
-
-  const sel=document.createElement('select');
-  sel.id='custom-workattr-select';
-  sel.style.width='100%'; sel.style.height='36px';
-  sel.style.border='1px solid #DFE1E6'; sel.style.borderRadius='4px';
-  sel.style.padding='6px 8px';
-  sel.innerHTML = `<option value="">Select an option...</option>`;
-  sel.addEventListener('change', ()=>{ S.selection = sel.value || null; L("Task selected:", S.selection); });
-
-  host.appendChild(label); host.appendChild(sel);
-
-  const nativeRow=findNativeTaskRow(form);
-  if(nativeRow && nativeRow.parentElement){
-    nativeRow.parentElement.insertBefore(host,nativeRow.nextSibling);
-  }else{
-    form.appendChild(host);
-  }
-  return host;
-}
-function renderOptions(host, options, keep){
-  const sel=host.querySelector('#custom-workattr-select'); if(!sel) return;
-  const prior = keep ?? sel.value ?? "";
-  sel.innerHTML = `<option value="">Select an option...</option>`;
-  for(const o of (options||[])){
-    const op=document.createElement('option'); op.value=o.value; op.textContent=o.value; sel.appendChild(op);
-  }
-  if(prior && [...sel.options].some(x=>x.value===prior)){ sel.value=prior; S.selection=prior; }
-  else { sel.value=""; S.selection=null; }
-}
-async function fetchOptions(issueKey){
-  if(S.optionsCache.has(issueKey)) return S.optionsCache.get(issueKey);
-  L("▶ Fetching options for", issueKey);
-  const data=await fetchJSONP(`${CFG.SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}`);
-  const values=Array.isArray(data?.values)?data.values:[];
-  S.optionsCache.set(issueKey, values);
-  return values;
-}
-function ensureWarning(host){
-  let w=host.querySelector('.custom-workattr-warning');
-  if(!w){ w=document.createElement('div'); w.className='custom-workattr-warning'; w.style.marginTop='4px'; w.style.fontSize='12px'; w.style.color='#DE350B'; host.appendChild(w); }
-  return w;
-}
-
-/* ---------------- Submit button hard-disable ---------------- */
-function findSubmitBtn(){
-  return document.querySelector('button[name="submitWorklogButton"]');
-}
-function setSubmitDisabled(disabled){
-  const btn=findSubmitBtn(); if(!btn) return;
-
-  const stop=(e)=>{ e.stopImmediatePropagation(); e.stopPropagation(); e.preventDefault(); return false; };
-
-  if(disabled){
-    btn.disabled=true;
-    btn.setAttribute('disabled','');
-    btn.setAttribute('data-state','not-active');
-    btn.setAttribute('aria-disabled','true');
-    btn.style.pointerEvents='none';
-    btn.style.opacity='0.6';
-
-    if(!btn.__workattrStopper){ btn.__workattrStopper=stop; btn.addEventListener('click', stop, true); }
-    if(!btn.__workattrMO){
-      btn.__workattrMO=new MutationObserver(()=>{ // self-heal if Tempo flips it back
-        if(!btn.disabled || btn.getAttribute('data-state')!=='not-active'){
-          btn.disabled=true;
-          btn.setAttribute('disabled','');
-          btn.setAttribute('data-state','not-active');
-          btn.setAttribute('aria-disabled','true');
-          btn.style.pointerEvents='none';
-          btn.style.opacity='0.6';
-        }
-      });
-      btn.__workattrMO.observe(btn,{attributes:true,attributeFilter:['disabled','data-state']});
-    }
-  }else{
-    if(btn.__workattrMO){ btn.__workattrMO.disconnect(); btn.__workattrMO=null; }
-    if(btn.__workattrStopper){ btn.removeEventListener('click', btn.__workattrStopper, true); btn.__workattrStopper=null; }
-    btn.disabled=false;
-    btn.removeAttribute('disabled');
-    btn.setAttribute('data-state','active');
-    btn.setAttribute('aria-disabled','false');
-    btn.style.pointerEvents='';
-    btn.style.opacity='';
-  }
-}
-
-/* ----------------- Inject into Tempo POST/PUT ---------------- */
-const hookXHR = once(() => {
-  if(S.xhrHooked) return; S.xhrHooked=true;
-  const _open=XMLHttpRequest.prototype.open;
-  const _send=XMLHttpRequest.prototype.send;
-
-  XMLHttpRequest.prototype.open=function(m,u,...rest){
-    this.__wx={ m:(m||"").toUpperCase(), u:String(u||"") };
-    return _open.call(this,m,u,...rest);
+  // Global-ish state
+  const S = {
+    bypass: false,             // true for KTAXA
+    lastIssueKey: null,        // last resolved issue key for the current form
+    lastOptions: [],           // last options fetched from SR
+    selection: '',             // current chosen Task value (label)
+    wiredForms: new WeakSet(), // to avoid double-wiring a single DOM node
+    xhrPatched: false
   };
-  XMLHttpRequest.prototype.send=function(b){
-    try{
-      const {m,u}=this.__wx||{};
-      const isPOST = m==="POST" && /\/rest\/tempo-timesheets\/\d+\/worklogs\/?$/i.test(u||"");
-      const isPUT  = m==="PUT"  && /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+/.test(u||"");
-      if((isPOST||isPUT) && b && S.selection){
-        let js;
-        if(typeof b==="string"){ try{ js=JSON.parse(b); }catch(e){} }
-        if(js){
-          js.attributes=js.attributes||{};
-          js.attributes[CFG.ATTR_KEY]=S.selection;
-          b=JSON.stringify(js);
-          L("✅ Injected into XHR", {[CFG.ATTR_KEY]:S.selection});
+
+  // -------------------- KTAXA bypass (one-time) -------------------------
+  (async function checkKTAXA() {
+    try {
+      const r = await fetch('/rest/api/2/myself?expand=groups');
+      if (r.ok) {
+        const j = await r.json();
+        const groups = (j?.groups?.items || []).map(g => g.name || g?.displayName);
+        if (groups.includes(K_TAXA_GROUP)) {
+          S.bypass = true;
+          log('Bypass enabled for KTAXA, group =', K_TAXA_GROUP);
         }
       }
-    }catch(e){}
-    return _send.call(this,b);
-  };
-});
+    } catch (e) {
+      // Non-fatal; proceed normally
+    }
+  })();
 
-/* ----------------- Main loader for dialog ------------------- */
-const loadForCurrentForm = throttle(async function(){
-  const form=getForm();
-  if(!form) return;
+  // -------------------- Robust issue-key extraction ----------------------
+  function extractIssueKey(form) {
+    if (!form) return null;
 
-  if(await isUserKTAXA()){ W("KTAXA user — bypass"); return; }
+    // 1) Most reliable: an anchor linking to /browse/KEY-123
+    const anchor = form.querySelector('a[href*="/browse/"]');
+    if (anchor) {
+      const m = (anchor.getAttribute('href') || '').match(/[A-Z][A-Z0-9]+-\d+/i);
+      if (m) return m[0].toUpperCase();
+    }
 
-  const issueKey=extractIssueKey(form);
-  if(!issueKey){ W("issueKey not found (waiting for selection)"); return; }
-  if(S.lastIssueKey===issueKey) return;
-  S.lastIssueKey=issueKey;
+    // 2) Elements that often carry issue key
+    const dataEl = form.querySelector('[data-issue-key], [data-issueKey], [data-testid*="issue"]');
+    if (dataEl) {
+      const cand =
+        dataEl.getAttribute('data-issue-key') ||
+        dataEl.getAttribute('data-issueKey') ||
+        dataEl.textContent || '';
+      const m = cand.match(/[A-Z][A-Z0-9]+-\d+/i);
+      if (m) return m[0].toUpperCase();
+    }
 
-  hookXHR();
-  hideNativeTask(form);
-  const host=ensureCustomField(form);
+    // 3) Issue picker chip / input
+    const picker =
+      form.querySelector('#issuePickerInput') ||
+      form.querySelector('[id*="issuePicker"]') ||
+      form.querySelector('[aria-controls*="issue-picker"], [role="combobox"][aria-haspopup="listbox"]');
+    if (picker) {
+      const cand = picker.value || picker.getAttribute('value') || picker.textContent || '';
+      const m = cand.match(/[A-Z][A-Z0-9]+-\d+/i);
+      if (m) return m[0].toUpperCase();
+    }
 
-  const opts = await fetchOptions(issueKey);
-  renderOptions(host, opts);
+    // 4) Fallback: default Tempo description "Working on issue KEY-123"
+    const desc = form.querySelector('#comment, textarea[id*="comment"]');
+    if (desc && typeof desc.value === 'string') {
+      const m = desc.value.match(/[A-Z][A-Z0-9]+-\d+/i);
+      if (m) return m[0].toUpperCase();
+    }
 
-  const inScope = CFG.GATE_PREFIX.test(issueKey);
-  const exempt  = CFG.EXEMPT_KEYS.includes(issueKey.toUpperCase());
-  let block=false, hasAC=true;
+    // 5) Light scan of visible text in header/body
+    const scanNodes = Array.from(
+      form.querySelectorAll(
+        'header, h1, h2, h3, .sc-cUEIKg, .sc-jDDxOa, label, .sc-kItwNn, .sc-bKhNmF, .css-1hwfws3, .css-stm2gu-singleValue, span, div, a'
+      )
+    ).slice(0, 400);
+    for (const n of scanNodes) {
+      const t = (n.textContent || '').trim();
+      if (!t) continue;
+      const m = t.match(/[A-Z][A-Z0-9]+-\d+/i);
+      if (m) return m[0].toUpperCase();
+    }
 
-  if(inScope && !exempt){
-    hasAC = await hasActivityCode(issueKey);
-    block = !hasAC;
+    return null;
   }
 
-  L("gate",{key:issueKey, hasAC, exempt, hasTask:!!S.selection, block});
-
-  const warn = ensureWarning(host);
-  if(block){
-    warn.textContent = "Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.";
-    warn.style.display='block';
-  }else{
-    warn.textContent=""; warn.style.display='none';
+  // --------------- Find native Task row + current value ------------------
+  function findNativeTaskRow(form) {
+    // look for the label that says "Task"
+    const labels = Array.from(form.querySelectorAll('label'));
+    const lab = labels.find(l => (l.textContent || '').trim().toLowerCase() === ATTR_NAME.toLowerCase());
+    if (!lab) return null;
+    // row container is usually two levels up
+    return lab.closest('.sc-bKhNmF') || lab.parentElement?.parentElement || lab.parentElement;
   }
-  setSubmitDisabled(block);
-}, 120);
 
-/* ----------------- Observers & triggers --------------------- */
-const arm = once(()=>{
-  const mo=new MutationObserver(debounce(loadForCurrentForm,60));
-  mo.observe(document.body,{childList:true,subtree:true});
-  L("Tempo injector ready");
-});
-arm();
-
-// Kick on clicks that open/refresh the dialog
-document.addEventListener("click",(e)=>{
-  const t=e.target;
-  if(!t) return;
-  if(
-    t.closest('[name="logWorkButton"]') ||              // main Log Time button
-    t.closest('[data-testid="issue-picker"]') ||        // issue picker open
-    t.closest('#worklogForm') ||                        // inside dialog
-    t.closest('button[name="submitWorklogButton"]')     // submit button
-  ){
-    setTimeout(loadForCurrentForm,0);
+  function readNativeSelectedTask(form) {
+    const row = findNativeTaskRow(form);
+    if (!row) return '';
+    const valEl =
+      row.querySelector('.css-stm2gu-singleValue, .css-1uccc91-singleValue, .sc-bBrHrO, [data-testid*="singleValue"]');
+    const txt = (valEl?.textContent || '').trim();
+    return txt;
   }
-});
 
-// Reset per dialog close
-window.addEventListener("keydown",(e)=>{ if(e.key==="Escape") setTimeout(()=>{S.lastIssueKey=null},0); });
+  // ---------------------- Build custom UI once per form ------------------
+  function ensureCustomField(form) {
+    let host = form.querySelector('#custom-workattr-host');
+    if (host) return host;
+
+    host = document.createElement('div');
+    host.id = 'custom-workattr-host';
+    host.className = 'custom-workattr-host'; // for quick styling if needed
+    host.style.marginTop = '6px';
+
+    host.innerHTML = `
+      <div class="sc-bKhNmF LBFFT" type="default">
+        <div class="sc-cgFpzT eGniAY">
+          <label class="sc-jvLaUc cSDnQh sc-jhfVAM lauuLP">${ATTR_NAME} (from API)</label>
+        </div>
+        <div class="sc-jDDxOa geIDWX">
+          <select id="custom-workattr-select" class="sc-cTQhss gwKKdf" style="width:100%; height:40px;">
+            <option value="">Select an option...</option>
+          </select>
+          <div id="custom-workattr-warning" style="color:#d12926; font-size:12px; margin-top:4px; display:none;">
+            <!-- message goes here -->
+          </div>
+          <div id="custom-workattr-note" style="color:#6b778c; font-size:12px; margin-top:4px; display:none;">
+            <!-- small note -->
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Insert right after the native row if present; else at end of form content
+    const nativeRow = findNativeTaskRow(form);
+    if (nativeRow && nativeRow.parentElement) {
+      nativeRow.parentElement.insertBefore(host, nativeRow.nextSibling);
+      // Hide native row so users always use the API-driven one
+      nativeRow.style.display = 'none';
+      nativeRow.classList.add('workattr-hide-native');
+    } else {
+      (form.querySelector('.sc-bKhNmF') || form).appendChild(host);
+    }
+
+    // Selection change => update S.selection + gate
+    host.querySelector('#custom-workattr-select').addEventListener('change', () => {
+      const sel = host.querySelector('#custom-workattr-select');
+      S.selection = sel.value || '';
+      applyGate(form); // re-evaluate blocking rule
+    });
+
+    return host;
+  }
+
+  function populateOptions(form, values, preselectLabel) {
+    S.lastOptions = values || [];
+    const host = ensureCustomField(form);
+    const sel = host.querySelector('#custom-workattr-select');
+
+    // rebuild
+    const chosen = S.selection || preselectLabel || '';
+    sel.innerHTML = `<option value="">Select an option...</option>`;
+    S.lastOptions.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.value;
+      if (o.value === chosen) opt.selected = true;
+      sel.appendChild(opt);
+    });
+
+    // if we preselected via edit mode
+    if (chosen && !S.selection) S.selection = chosen;
+  }
+
+  // ---------------------- Fetch options via JSONP ------------------------
+  function fetchOptionsJSONP(issueKey) {
+    return new Promise((resolve) => {
+      const cbName = `tempoWorkAttrCB_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const url = `${SR_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}&callback=${cbName}`;
+      let done = false;
+
+      window[cbName] = (data) => {
+        if (done) return;
+        done = true;
+        try { resolve(data?.values || []); }
+        catch { resolve([]); }
+        script.remove();
+        delete window[cbName];
+      };
+
+      script.src = url;
+      script.onerror = () => {
+        if (!done) {
+          done = true;
+          resolve([]);
+          try { delete window[cbName]; } catch {}
+          script.remove();
+        }
+      };
+      document.body.appendChild(script);
+    });
+  }
+
+  // ---------------------- Activity Code check (Jira) ---------------------
+  async function hasActivityCode(issueKey) {
+    try {
+      const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`);
+      if (!r.ok) return false;
+      const j = await r.json();
+      const v = j?.fields?.[AC_FIELD];
+      if (v == null) return false;
+      if (typeof v === 'string') return v.trim().length > 0;
+      // array/object fallback
+      return Boolean(v);
+    } catch {
+      return false;
+    }
+  }
+
+  // ---------------------- Button enable/disable --------------------------
+  function getSubmitButton(form) {
+    // Tempo uses named buttons; prefer name attr
+    return form.querySelector('[name="submitWorklogButton"]')
+        || Array.from(form.querySelectorAll('button'))
+             .find(b => /^(log time|update)$/i.test((b.textContent || '').trim()));
+  }
+
+  function setButtonDisabled(form, disabled, reasonMsg) {
+    const btn = getSubmitButton(form);
+    if (!btn) return;
+
+    if (disabled) {
+      btn.setAttribute('disabled', '');
+      btn.setAttribute('data-state', 'not-active');
+      btn.style.opacity = '0.6';
+    } else {
+      btn.removeAttribute('disabled');
+      btn.setAttribute('data-state', 'active');
+      btn.style.opacity = '';
+    }
+
+    const host = ensureCustomField(form);
+    const warnBox = host.querySelector('#custom-workattr-warning');
+    if (disabled) {
+      warnBox.textContent =
+        'Log Time is disabled since Activity Code is not yet available. ' +
+        'Please select your Domain BAU demand to log it temporarily to BAU.';
+      warnBox.style.display = 'block';
+    } else {
+      warnBox.textContent = '';
+      warnBox.style.display = 'none';
+    }
+  }
+
+  // ---------------------- Gate evaluation & message ----------------------
+  async function applyGate(form) {
+    if (S.bypass) {
+      setButtonDisabled(form, false);
+      return;
+    }
+    const key = S.lastIssueKey;
+    if (!key) {
+      setButtonDisabled(form, false);
+      return;
+    }
+
+    const isDM = /^DM-\d+$/i.test(key);
+    const exempt = EXEMPT_ISSUES.has(key);
+
+    // do we currently have a chosen Task?
+    const hasTask = !!S.selection;
+
+    let hasAC = true;
+    if (isDM && !exempt) {
+      // only then we check AC
+      hasAC = await hasActivityCode(key);
+    }
+
+    const block = isDM && !exempt && !hasAC && !hasTask;
+    log('gate', { key, hasAC, exempt, hasTask, block });
+
+    setButtonDisabled(form, block);
+  }
+
+  // ---------------------- Wire a worklog form instance -------------------
+  async function loadForCurrentForm(form) {
+    if (!form || S.wiredForms.has(form)) return;
+    S.wiredForms.add(form);
+
+    // Prepare UI
+    const host = ensureCustomField(form);
+
+    // Resolve issue key & show options
+    const key = extractIssueKey(form);
+    S.lastIssueKey = key;
+    if (!key) {
+      warn('issueKey not found');
+      populateOptions(form, [], '');
+      setButtonDisabled(form, false);
+      return;
+    }
+
+    log('Fetching options for', key);
+    const values = await fetchOptionsJSONP(key);
+
+    // Preselect from native (Edit dialog) if present
+    const nativeSelected = readNativeSelectedTask(form);
+    populateOptions(form, values, nativeSelected);
+
+    // Apply block rule after initial paint
+    applyGate(form).catch(()=>{});
+  }
+
+  // ---------------------- Observe dialog open/close ----------------------
+  function findWorklogForm() {
+    return document.querySelector('#worklogForm') ||
+           document.querySelector('div[id^="worklogForm"]'); // safety
+  }
+
+  function wireFormIfPresent() {
+    const form = findWorklogForm();
+    if (!form) return;
+    loadForCurrentForm(form);
+  }
+
+  const mo = new MutationObserver(() => wireFormIfPresent());
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  // Also wire on initial load (if dialog already open)
+  wireFormIfPresent();
+
+  // ---------------------- Patch XHR to inject attribute ------------------
+  function patchXHR() {
+    if (S.xhrPatched) return;
+    S.xhrPatched = true;
+
+    const open = XMLHttpRequest.prototype.open;
+    const send = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url, async, user, pass) {
+      this.__tempo = this.__tempo || {};
+      this.__tempo.method = (method || '').toUpperCase();
+      this.__tempo.url = url || '';
+      return open.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function (body) {
+      try {
+        const info = this.__tempo || {};
+        const isWorklog =
+          info.method === 'POST' || info.method === 'PUT' || info.method === 'PATCH';
+        const url = info.url || '';
+
+        // Tempo worklog endpoints (core/timesheets both seen)
+        const target =
+          /\/rest\/tempo-(?:core|timesheets)\/\d+\/worklogs(?:\/\d+)?\/?$/i.test(url);
+
+        if (isWorklog && target && body && typeof body === 'string') {
+          try {
+            const obj = JSON.parse(body);
+            obj.attributes = obj.attributes || {};
+
+            // Only inject when we have a chosen value
+            if (S.selection) {
+              obj.attributes[ATTR_KEY] = S.selection;
+              log('✅ Injected into XHR', { [ATTR_KEY]: S.selection });
+            }
+            body = JSON.stringify(obj);
+          } catch { /* ignore parse errors */ }
+        }
+      } catch { /* no-op */ }
+
+      return send.call(this, body);
+    };
+  }
+
+  patchXHR();
+
+  // ---------------------- Style tweak for hidden native row --------------
+  const style = document.createElement('style');
+  style.textContent = `
+    .workattr-hide-native { display: none !important; }
+  `;
+  document.head.appendChild(style);
+
+})();
 </script>
