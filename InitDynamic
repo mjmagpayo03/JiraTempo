@@ -139,7 +139,7 @@
 
   /* ---------- Config ---------- */
   const ATTR_ID        = 14;
-  const ATTR_KEY       = "_Picker_";
+  const ATTR_KEY       = "_Task_";
   const NATIVE_LABEL   = "Task";
   const CUSTOM_LABEL   = "Task (from API)";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
@@ -147,7 +147,7 @@
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set(["DM-50267"]);
+  const EXEMPT_ISSUES  = new Set(["DM-50267", "DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
 
