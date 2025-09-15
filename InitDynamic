@@ -19,7 +19,7 @@
 (function(){
   // Prefer AJS.$, fallback to jQuery/$ if available
   const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
+  if (!$) { return; }
 
   function removeIssueType(){
     try{
@@ -114,37 +114,38 @@
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.1 (PROD) ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v6.2 (PROD) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v6.1 (PROD)
-   * - Uses native label "Task" (no "(from API)")
+   * Tempo Work Attribute Helper — Core v6.2 (PROD)
+   * - Restores full EXEMPT_ISSUES list
    * - Parent-only warning (no warning on Sub-task/Change Request)
-   * - Disables dialog button when: no Task selected OR warning shown
-   * - KTAXA group bypass (no custom field, no warning)
-   * - JSONP Task list via ScriptRunner
-   * - Observers re-init after Cancel/close
-   * - Injects Task only on CREATE (POST) to avoid 500s on PUT edits
+   * - Disable dialog button when Task empty or warning shown
+   * - Inject Task only on POST (create) — avoid 500 on PUT (edit)
+   * - Refill-if-empty safeguard after save/cancel
    * ============================================================ */
 
-  /* ---------- Config (adjust if needed) ---------- */
-  const ATTR_KEY        = "Task";                    // PROD label/key
-  const NATIVE_LABEL    = "Task";                    // what the Tempo dialog shows
-  const CUSTOM_LABEL    = "Task";                    // what we render
-  const JSONP_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD        = "customfield_17447";       // Activity Code field id (prod)
-  const KTAXA_GROUP_NAME= "DM-KTAXA";
+  /* ---------- Config ---------- */
+  const ATTR_KEY         = "Task";                   // Tempo attribute key on PROD
+  const NATIVE_LABEL     = "Task";                   // Native field label text
+  const CUSTOM_LABEL     = "Task";                   // Shown above our custom select
+  const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
+  const AC_FIELD         = "customfield_17447";
+  const KTAXA_GROUP_NAME = "DM-KTAXA";
+  const OBSERVE_DEBOUNCE_MS = 120;
 
-  // Show warning only for DM-* parent issues not in this exemption set:
-  const EXEMPT_ISSUES   = new Set([
-    // add PROD exemptions here, comma-separated (e.g. "DM-50267")
+  // Exempt parent issues — never show the AC warning for these
+  const EXEMPT_ISSUES = new Set([
+    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
+    "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
+    "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484",
+    "DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399",
+    "DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"
   ]);
 
-  // treat these issue types as "not parent" (no warning)
+  // No AC warning for subtask-like items
   const SUBTASK_LIKE_TYPES = new Set(["Sub-task","Change Request"]);
-
-  const OBSERVE_DEBOUNCE_MS = 120;
 
   /* ---------- State ---------- */
   const S = {
@@ -187,8 +188,7 @@
   /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
-
-  function getForm() { return document.querySelector("#worklogForm"); }
+  function getForm(){ return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
@@ -249,9 +249,9 @@
   /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
-    // try 'for' first, then text
     let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
-    if (!lab) lab = [...form.querySelectorAll("label")].find(l => (l.textContent || "").trim().toLowerCase() === NATIVE_LABEL.toLowerCase());
+    if (!lab) lab = [...form.querySelectorAll("label")]
+      .find(l => (l.textContent || "").trim().toLowerCase() === NATIVE_LABEL.toLowerCase());
     if (!lab) return null;
     return lab.closest(".sc-bKhNmF") || lab.parentElement?.parentElement || lab.parentElement;
   }
@@ -308,7 +308,7 @@
   /* ---------- Warning + Disable ---------- */
   function setSubmitBlocked(form, blocked) {
     const btn = getSubmitBtn(form);
-    if (!btn) return;
+    if (!btn) return;                    // do NOT touch page-level “Log Time” menu
     btn.disabled = !!blocked;
     btn.setAttribute("data-state", blocked ? "not-active" : "active");
     btn.setAttribute("aria-disabled", String(!!blocked));
@@ -355,10 +355,7 @@
         const j = await r.json();
         const v = j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length > 0);
-      } catch {
-        // fail-open to avoid blocking on transient errors
-        return true;
-      }
+      } catch { return true; } // fail-open
     })();
     S.acCache.set(issueKey, ok);
     return ok;
@@ -382,11 +379,11 @@
     return val;
   }
 
-  /* ---------- Gate (warning + disable) ---------- */
+  /* ---------- Gate ---------- */
   async function applyGate(form) {
     if (!form) return;
 
-    // KTAXA: show native Task, no warning, no disable
+    // KTAXA bypass
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
@@ -399,15 +396,18 @@
     const warnBox  = getWarnBox(form);
     const hasTask  = !!(select && select.value);
 
+    // default: no warning
     let showWarn = false;
-    if (key && isDM(key) && !EXEMPT_ISSUES.has(key)) {
-      const [parent, ac] = await Promise.all([isParentIssue(key), hasActivityCode(key)]);
-      showWarn = parent && !ac;
+
+    if (key && isDM(key)) {
+      // hard exemption: if exempt parent, never warn
+      if (!EXEMPT_ISSUES.has(key)) {
+        const [parent, ac] = await Promise.all([isParentIssue(key), hasActivityCode(key)]);
+        showWarn = parent && !ac;  // parent only + no AC
+      }
     }
 
     if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
-
-    // disable only inside the dialog form
     setSubmitBlocked(form, showWarn || !hasTask);
   }
 
@@ -423,7 +423,6 @@
 
       if (S.lastIssueKey !== issueKey) {
         S.lastIssueKey = issueKey;
-        // keep previous selection only within the same issue
         S.selection = "";
       }
 
@@ -435,11 +434,14 @@
       }
 
       onceStyle();
-      const host = ensureCustomHost(form);
+      const host   = ensureCustomHost(form);
       if (!host) return;
 
       const select = getCustomSelect(form);
-      if (S.lastOptionsKey !== issueKey) {
+
+      // Refill-if-empty safeguard (after save/cancel or first open)
+      const needRefill = !select || select.options.length <= 1;
+      if (needRefill || S.lastOptionsKey !== issueKey) {
         const options = await fetchOptionsFor(issueKey).catch(() => []);
         S.lastOptionsKey = issueKey;
         fillSelect(select, options, S.selection);
@@ -450,17 +452,6 @@
         select.addEventListener("change", () => {
           S.selection = select.value || "";
           applyGate(form);
-        });
-      }
-
-      // re-evaluate on Cancel (dialog remounts)
-      const cancelBtn = [...(form.querySelectorAll('button')||[])]
-        .find(b => /cancel/i.test((b.textContent||"").trim()));
-      if (cancelBtn && !cancelBtn.__workattrBound){
-        cancelBtn.__workattrBound = true;
-        cancelBtn.addEventListener("click", () => {
-          // next open will rebuild cleanly
-          setTimeout(loadForCurrentForm, 200);
         });
       }
 
@@ -489,10 +480,10 @@
   }
 
   /* ---------- Injection guards ---------- */
-  function looksLikeCreate(bodyObj) {
+  function looksLikeTempoCreate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
-    // create payload usually contains 'started' + 'timeSpentSeconds' and NOT originId
-    if ("started" in bodyObj && "timeSpentSeconds" in bodyObj && !("originId" in bodyObj)) return true;
+    // Typical create has these fields
+    if ("started" in bodyObj && "timeSpentSeconds" in bodyObj) return true;
     return false;
   }
 
@@ -515,12 +506,11 @@
         try {
           if (S.ktaxa === true) return _send.call(this, body);
           const isPOST = (this.__method || "") === "POST";
-          // Only inject on CREATE (POST) to avoid 500s on PUT edits
           if (!isPOST || !body || typeof body !== "string") {
             return _send.call(this, body);
           }
           let obj; try { obj = JSON.parse(body); } catch { obj = null; }
-          if (looksLikeCreate(obj)) {
+          if (looksLikeTempoCreate(obj)) {
             const form = getForm();
             const sel = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
@@ -528,12 +518,10 @@
               obj.attributes = obj.attributes || {};
               obj.attributes[ATTR_KEY] = chosen;
               body = JSON.stringify(obj);
-              log("✅ Injected into XHR (create)", { [ATTR_KEY]: chosen });
+              log("✅ Injected into XHR (POST)", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) {
-          warn("XHR inject skipped due to error:", e);
-        }
+        } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
       };
     }
@@ -550,10 +538,9 @@
 
           if (S.ktaxa === true) return _fetch(input, init);
 
-          // Only inject on CREATE (POST)
           if (meth === "POST" && init?.body && typeof init.body === "string") {
             let obj; try { obj = JSON.parse(init.body); } catch { obj = null; }
-            if (looksLikeCreate(obj)) {
+            if (looksLikeTempoCreate(obj)) {
               const form = getForm();
               const sel = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
@@ -561,13 +548,11 @@
                 obj.attributes = obj.attributes || {};
                 obj.attributes[ATTR_KEY] = chosen;
                 init = { ...init, body: JSON.stringify(obj) };
-                log("✅ Injected into fetch (create)", { [ATTR_KEY]: chosen });
+                log("✅ Injected into fetch (POST)", { [ATTR_KEY]: chosen });
               }
             }
           }
-        } catch (e) {
-          warn("fetch inject skipped due to error:", e);
-        }
+        } catch (e) { warn("fetch inject skipped:", e); }
         return _fetch(input, init);
       };
     }
@@ -578,7 +563,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.1)");
+    log("Ready (v6.2 PROD)");
   }
 
   if (document.readyState === "loading") {
