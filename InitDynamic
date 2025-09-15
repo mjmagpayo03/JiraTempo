@@ -1,19 +1,20 @@
 <font color="#00008f">
 <b>
 <ul>
-     <!--<li>Confluence Application will have a quick maintenance schedule:  <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font> Please save all work 30 Minutes before the change window to avoid any loss of data.</li>-->
-    <!--<li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li>-->
     <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
-    <!--    <li>Tempo Charging for August - December 2024: <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a> </li> -->
 </ul>
 </b>
 </font>
 
 <style>
-#announcement-banner{background-color:#9fd9b4;}
-/* helper classes */
-.workattr-hide-native{display:none!important;}
-.workattr-disabled-btn{pointer-events:none!important;opacity:.6!important;}
+#announcement-banner{ background-color:#9fd9b4; }
+/* helper */
+.workattr-hide-native{ display:none !important; }
+.workattr-disabled-btn{ pointer-events:none !important; opacity:.6 !important; }
+.custom-workattr-host{ margin:0 0 8px; }
+.custom-workattr-label{ font-weight:600; display:block; margin-bottom:6px; }
+.custom-workattr-select{ width:100%; height:40px; }
+.custom-workattr-warning{ color:#c00; font-size:.85rem; margin-top:6px; }
 </style>
 
 <!-- ===== PROD legacy banner behaviors ===== -->
@@ -28,26 +29,22 @@
       $(".aui-list-item-link").filter(function(){return HIDE.has($(this).text().trim());}).parent().hide();
     }catch(e){}
   }
-
   function removeUnwantedIssueTypes(){
     try{
       $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType",removeIssueType);
       $("#issuetype-field").off(".removeIssueType")
         .on("keyup.removeIssueType",removeIssueType)
         .on("click.removeIssueType",()=>setTimeout(removeIssueType,1));
-      $("#project").off("change.removeIssueType").on("change.removeIssueType",()=>{
-        setTimeout(()=>{ if(typeof window.findIssueType==="function"){window.findIssueType();} else {removeIssueType();} },1000);
-      });
+      $("#project").off("change.removeIssueType").on("change.removeIssueType",()=>{ setTimeout(()=>{ if(typeof window.findIssueType==="function"){window.findIssueType();} else {removeIssueType();} },1000); });
     }catch(e){}
   }
-
   function overwriteNewDemandNames(){
     try{
       const url=String(window.location.href);
-      if(url.includes("&demandnew=true")){removeUnwantedIssueTypes();}
+      if(url.includes("&demandnew=true")){ removeUnwantedIssueTypes(); }
       if(url.includes("&demandcustomized=true")){
         const hdr=$(".aui-page-header-inner").get(0);
-        if(hdr&&hdr.innerHTML){hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand");}
+        if(hdr&&hdr.innerHTML){ hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand"); }
         $('label[for="issuetype-field"]').text("Demand Type");
         $('label[for="issue-create-issue-type"]').text("Demand Type");
         $('label[for="project-field"]').parent().hide();
@@ -60,7 +57,7 @@
           const issueType=$typeRow.children().eq(2).text();
           if(issueType==="Service Delivery Demand"||issueType==="Solution Delivery Demand"){
             const hdr=$(".aui-page-header-inner").get(0);
-            if(hdr&&hdr.innerHTML){hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand");}
+            if(hdr&&hdr.innerHTML){ hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand"); }
             $projRow.hide();
             $('label[for="issue-create-issue-type"]').text("Demand Type");
           }
@@ -68,33 +65,29 @@
       }
     }catch(e){}
   }
-
   function addCSSRule(sheet,selector,rules,index){
     try{
-      if(!sheet)return;
-      if("insertRule" in sheet){sheet.insertRule(`${selector}{${rules}}`,index);}
-      else if("addRule" in sheet){sheet.addRule(selector,rules,index);}
+      if(!sheet) return;
+      if("insertRule" in sheet){ sheet.insertRule(`${selector}{${rules}}`,index); }
+      else if("addRule" in sheet){ sheet.addRule(selector,rules,index); }
     }catch(e){}
   }
-
   function hidePriority(){
     try{
-      const p=window.location.pathname||"";
-      const qs=window.location.search||"";
-      const match=p.includes("RapidBoard.jspa")&&(/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      const p=window.location.pathname||"", qs=window.location.search||"";
+      const match=p.includes("RapidBoard.jspa") && (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
       if(match){
         const sheet=(document.styleSheets&&document.styleSheets[0])||null;
         addCSSRule(sheet,".ghx-priority","display: none;",(sheet?.cssRules?.length||0));
       }
     }catch(e){}
   }
-
   function replaceTAT(){
     try{
       if(window.JIRA&&JIRA.ViewIssueTabs){
         JIRA.ViewIssueTabs.onTabReady(function(){
-          const ttsSLA=$("#tts-sla-panel_heading");
-          if(ttsSLA.length&&!(ttsSLA.html()||"").includes("TAT Panel")){
+          const ttsSLA=AJS.$("#tts-sla-panel_heading");
+          if(ttsSLA.length && !(ttsSLA.html()||"").includes("TAT Panel")){
             ttsSLA.find(".toggle-title").last().text("TAT Panel");
             ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
           }
@@ -102,98 +95,64 @@
       }
     }catch(e){}
   }
-
   replaceTAT();
-  $(window).on("load",function(){overwriteNewDemandNames();hidePriority();});
+  $(window).on("load",function(){ overwriteNewDemandNames(); hidePriority(); });
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.2 ===== -->
+<!-- ===== Tempo Work Attribute Helper — v6.3 (row-only hide) ===== -->
 <script>
 (()=>{
 
-  /* ---------- Config ---------- */
-  const ATTR_KEY       = "_Task_";   // PROD attribute key
-  const NATIVE_LABEL   = "Task";
-  const CUSTOM_LABEL   = "Task";
+  /* Config */
+  const ATTR_KEY = "_Task_";         // PROD key
+  const NATIVE_LABEL = "Task";
+  const CUSTOM_LABEL = "Task";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD       = "customfield_17447";
-  const AC_WARN_TEXT   =
-    'Log Time is disabled since Activity Code is not yet available. '+
-    'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set([
-    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240",
-    "DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244",
-    "DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410",
-    "DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396",
-    "DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"
-  ]);
-  const KTAXA_GROUP_NAME="DM-KTAXA";
-  const OBSERVE_DEBOUNCE_MS=120;
-  const SENTINEL_MS=2000;
+  const AC_FIELD = "customfield_17447";
+  const AC_WARN_TEXT = 'Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.';
+  const EXEMPT_ISSUES = new Set(["DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"]);
+  const KTAXA_GROUP_NAME = "DM-KTAXA";
+  const OBSERVE_DEBOUNCE_MS = 120;
+  const SENTINEL_MS = 2000;
 
-  /* ---------- State ---------- */
-  const S={
+  /* State */
+  const S = {
     ktaxa:null,lastIssueKey:null,lastSeenIssueKey:null,lastOptionsKey:null,
     selection:"",fetching:new Map(),acCache:new Map(),typeCache:new Map(),
-    wiredXHR:false,wiredFetch:false,bodyMO:null,formMO:null,
-    formMOStarted:false,debounceTimer:null,sentinelTimer:null
+    wiredXHR:false,wiredFetch:false,bodyMO:null,formMO:null,formMOStarted:false,debounceTimer:null,sentinelTimer:null
   };
 
-  const log=(...a)=>console.log("%c[WorkAttr]","color:#2aa",...a);
-  const warn=(...a)=>console.warn("%c[WorkAttr]","color:#d80",...a);
   const RX_KEY=/\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM=k=>/^DM-\d+$/i.test(k||"");
   const getForm=()=>document.querySelector("#worklogForm");
-
-  const safeMatches=(node,sel)=>{ try{return !!(node&&node.matches&&node.matches(sel));}catch{return false;} };
+  const safeMatches=(node,sel)=>{try{return !!(node&&node.matches&&node.matches(sel));}catch{return false;}};
 
   function sniffIssueKeyFromURL(url){
     if(!url) return;
     let key=null;
     const mQ=url.match(/[?&]issueKey=([^&#]+)/i);
     if(mQ) key=decodeURIComponent(mQ[1]);
-    else{
-      const m1=url.match(/\/issue\/([A-Z][A-Z0-9]+-\d+)/i);
-      key=(m1&&m1[1]) || (url.match(RX_KEY)||[])[0] || null;
-    }
-    if(key){
-      key=key.toUpperCase();
-      if(S.lastSeenIssueKey!==key){
-        S.lastSeenIssueKey=key;
-        if(getForm()) setTimeout(loadForCurrentForm,0);
-      }
-    }
+    else{ const m1=url.match(/\/issue\/([A-Z][A-Z0-9]+-\d+)/i); key=(m1&&m1[1])||(url.match(RX_KEY)||[])[0]||null; }
+    if(key){ key=key.toUpperCase(); if(S.lastSeenIssueKey!==key){ S.lastSeenIssueKey=key; if(getForm()) setTimeout(loadForCurrentForm,0); } }
   }
 
   function extractIssueKeyFromDOM(form){
     if(!form) return null;
-    for(const a of form.querySelectorAll('a[href*="/browse/"]')){
-      const m=(a.getAttribute('href')||'').match(RX_KEY); if(m) return m[0].toUpperCase();
-    }
+    for(const a of form.querySelectorAll('a[href*="/browse/"]')){ const m=(a.getAttribute('href')||'').match(RX_KEY); if(m) return m[0].toUpperCase(); }
     for(const el of form.querySelectorAll('[data-issue-key],[data-issueKey],[data-testid*="issue"],[data-test-id*="issue"]')){
-      const bag=[
-        el.getAttribute('data-issue-key')||'',
-        el.getAttribute('data-issueKey')||'',
-        el.getAttribute('data-testid')||'',
-        el.getAttribute('data-test-id')||'',
-        el.textContent||''
-      ].join(' ');
+      const bag=[el.getAttribute('data-issue-key')||'',el.getAttribute('data-issueKey')||'',el.getAttribute('data-testid')||'',el.getAttribute('data-test-id')||'',el.textContent||''].join(' ');
       const m=bag.match(RX_KEY); if(m) return m[0].toUpperCase();
     }
-    const desc=form.querySelector('#comment, textarea[id*="comment"]');
-    if(desc){ const m=(desc.value||'').match(RX_KEY); if(m) return m[0].toUpperCase(); }
-    const m=(form.textContent||'').match(RX_KEY);
-    return m?m[0].toUpperCase():null;
+    const desc=form.querySelector('#comment, textarea[id*="comment"]'); if(desc){ const m=(desc.value||'').match(RX_KEY); if(m) return m[0].toUpperCase(); }
+    const m=(form.textContent||'').match(RX_KEY); return m?m[0].toUpperCase():null;
   }
 
   async function isKTAXA(){
     if(S.ktaxa!==null) return S.ktaxa;
     try{
-      const r=await fetch("/rest/api/2/myself?expand=groups");
-      if(!r.ok) throw 0;
-      const me=await r.json();
-      const names=(me?.groups?.items||[]).map(g=>(g?.name||"").toUpperCase());
+      const r=await fetch("/rest/api/2/myself?expand=groups"); if(!r.ok) throw 0;
+      const me=await r.json(); const names=(me?.groups?.items||[]).map(g=>(g?.name||"").toUpperCase());
       S.ktaxa=names.includes(KTAXA_GROUP_NAME.toUpperCase());
     }catch{S.ktaxa=false;}
     return S.ktaxa;
@@ -208,12 +167,12 @@
         if(!r.ok) throw 0;
         const j=await r.json();
         const it=j?.fields?.issuetype||{};
-        const isSubtask=!!it?.subtask;
+        const isSub=!!it?.subtask;
         const name=(it?.name||"").toLowerCase();
-        if(isSubtask) return false;
+        if(isSub) return false;
         if(name==="change request") return false;
         return true;
-      }catch{ return true; }
+      }catch{return true;}
     })();
     S.typeCache.set(issueKey,val);
     return val;
@@ -226,48 +185,48 @@
       try{
         const r=await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`);
         if(!r.ok) throw 0;
-        const j=await r.json();
-        const v=j?.fields?.[AC_FIELD];
+        const j=await r.json(); const v=j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length>0);
       }catch{ return true; }
     })();
-    S.acCache.set(issueKey,ok);
-    return ok;
+    S.acCache.set(issueKey,ok); return ok;
   }
 
-  function closestRow(el,root){
-    if(!el) return null;
-    let n=el;
-    const ROW_SEL='.sc-bKhNmF, .aui-field, [class^="css-"], [role="group"]';
-    for(let i=0;i<5 && n && n!==root;i++){
+  /* === NEW: get the exact field row and only hide that === */
+  function fieldRow(form, node){
+    if(!node) return null;
+    const ROW_SEL = '.sc-bKhNmF, .aui-field, [role="group"]';
+    let n=node;
+    for(let i=0;i<6 && n && n!==form;i++){
       if(n.id==='custom-workattr-host') return null;
       if(safeMatches(n,ROW_SEL) || n.getAttribute?.('role')==='group') return n;
       n=n.parentElement;
     }
-    return el.parentElement;
+    return null;
   }
 
   function hideNativeTaskRows(form){
-    if(!form) return;
     const host=form.querySelector('#custom-workattr-host');
     const select=form.querySelector('#custom-workattr-select');
     if(!host || !select) return; // never hide if our host/select isn't present yet
 
-    // by label
+    const rows=new Set();
+
+    // by label text
     for(const lab of form.querySelectorAll('label')){
       const txt=(lab.textContent||'').trim().toLowerCase();
       if(txt===NATIVE_LABEL.toLowerCase() && !lab.closest('#custom-workattr-host')){
-        let r=closestRow(lab,form)||lab;
-        for(let i=0;i<4 && r && r!==form;i++){ r.classList.add('workattr-hide-native'); r=r.parentElement; }
+        const r=fieldRow(form,lab); if(r) rows.add(r);
       }
     }
-    // by control id/name/aria-label
+    // by id/name/aria-label (be cautious)
     const q=[`#${CSS.escape(ATTR_KEY)}`,`[name="${ATTR_KEY}"]`,`[aria-label="${NATIVE_LABEL}"]`].join(',');
     for(const ctrl of form.querySelectorAll(q)){
       if(ctrl.closest('#custom-workattr-host')) continue;
-      let r=closestRow(ctrl,form)||ctrl;
-      for(let i=0;i<4 && r && r!==form;i++){ r.classList.add('workattr-hide-native'); r=r.parentElement; }
+      const r=fieldRow(form,ctrl); if(r) rows.add(r);
     }
+
+    rows.forEach(r=>r.classList.add('workattr-hide-native'));
   }
 
   function ensureCustomHost(form){
@@ -275,11 +234,12 @@
     let host=form.querySelector("#custom-workattr-host");
     if(host) return host;
 
-    // 1) create+insert our host first
-    let row=null;
-    let lab=[...form.querySelectorAll('label')]
-      .find(l=>(l.textContent||'').trim().toLowerCase()===NATIVE_LABEL.toLowerCase() && !l.closest('#custom-workattr-host'));
-    if(lab) row=closestRow(lab,form);
+    // find the native row to insert after (if available)
+    let insertAfter=null;
+    for(const lab of form.querySelectorAll('label')){
+      const txt=(lab.textContent||'').trim().toLowerCase();
+      if(txt===NATIVE_LABEL.toLowerCase()){ insertAfter=fieldRow(form,lab); if(insertAfter) break; }
+    }
 
     host=document.createElement("div");
     host.id="custom-workattr-host";
@@ -291,13 +251,14 @@
       </select>
       <div id="custom-workattr-warning" class="custom-workattr-warning" style="display:none;">${AC_WARN_TEXT}</div>
     `;
-    if(row?.parentElement){ row.parentElement.insertBefore(host,row.nextSibling); }
+
+    if(insertAfter?.parentElement){ insertAfter.parentElement.insertBefore(host, insertAfter.nextSibling); }
     else{ form.appendChild(host); }
 
-    // 2) only now try to hide native
+    // now it is safe to hide the native row only
     setTimeout(()=>hideNativeTaskRows(form),50);
 
-    // 3) safety: if our select failed to populate, unhide native after a short delay
+    // fallback: if our select didn't populate, unhide native
     setTimeout(()=>{
       const s=form.querySelector('#custom-workattr-select');
       if(!s || s.options.length<=1){
@@ -366,9 +327,9 @@
       const cb="tempoWorkAttrCB_"+Math.random().toString(36).slice(2);
       const sep=url.includes("?")?"&":"?";
       const s=document.createElement("script");
-      window[cb]=(data)=>{cleanup();resolve(data);};
-      function cleanup(){try{delete window[cb]}catch{} s.remove();}
-      s.onerror=()=>{cleanup();reject(new Error("JSONP failed"));};
+      window[cb]=(data)=>{ cleanup(); resolve(data); };
+      function cleanup(){ try{delete window[cb]}catch{} s.remove(); }
+      s.onerror=()=>{ cleanup(); reject(new Error("JSONP failed")); };
       s.src=`${url}${sep}callback=${cb}`;
       document.body.appendChild(s);
     });
@@ -389,7 +350,6 @@
 
   async function applyGate(form){
     if(!form) return;
-
     if(await isKTAXA()){
       form.querySelector("#custom-workattr-host")?.remove();
       const warnBox=getWarnBox(form); if(warnBox) warnBox.style.display="none";
@@ -398,18 +358,17 @@
     }
 
     const key=S.lastIssueKey;
-    const warnBox=getWarnBox(form);
     const select=getCustomSelect(form);
     const hasTask=!!(select && select.value);
-
     let showWarn=false;
+
     if(key && isDM(key) && !EXEMPT_ISSUES.has(key)){
       if(await isParentIssue(key)){
         const ac=await hasActivityCode(key);
         showWarn=!ac;
       }
     }
-
+    const warnBox=getWarnBox(form);
     if(warnBox) warnBox.style.display=showWarn?"block":"none";
     setSubmitBlocked(form, showWarn || !hasTask);
   }
@@ -420,7 +379,7 @@
 
     S.debounceTimer=setTimeout(async ()=>{
       const issueKey=extractIssueKeyFromDOM(form) || S.lastSeenIssueKey;
-      if(!issueKey){ warn("issueKey not found"); return; }
+      if(!issueKey) return;
 
       if(S.lastIssueKey!==issueKey){ S.lastIssueKey=issueKey; S.selection=""; }
 
@@ -477,10 +436,10 @@
               obj.attributes=obj.attributes||{};
               obj.attributes[ATTR_KEY]=chosen;
               body=JSON.stringify(obj);
-              log("✅ Injected into XHR",{[ATTR_KEY]:chosen});
+              console.log("%c[WorkAttr]","color:#2aa","✅ Injected into XHR",{[ATTR_KEY]:chosen});
             }
           }
-        }catch(e){warn("XHR inject skipped:",e);}
+        }catch(e){ console.warn("%c[WorkAttr]","color:#d80","XHR inject skipped:",e); }
         return _send.call(this,body);
       };
     }
@@ -502,17 +461,37 @@
                 obj.attributes=obj.attributes||{};
                 obj.attributes[ATTR_KEY]=chosen;
                 init={...init, body:JSON.stringify(obj)};
-                log("✅ Injected into fetch",{[ATTR_KEY]:chosen});
+                console.log("%c[WorkAttr]","color:#2aa","✅ Injected into fetch",{[ATTR_KEY]:chosen});
               }
             }
           }
-        }catch(e){warn("fetch inject skipped:",e);}
+        }catch(e){ console.warn("%c[WorkAttr]","color:#d80","fetch inject skipped:",e); }
         return _fetch(input,init);
       };
     }
   }
 
-  function boot(){ wireNetwork(); wireObservers(); log("Ready (v6.2)"); }
-  if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",boot);} else {boot();}
+  function wireObservers(){
+    if(!S.bodyMO){
+      S.bodyMO=new MutationObserver(()=>{
+        const form=getForm();
+        if(form && !S.formMOStarted){
+          if(!S.formMO) S.formMO=new MutationObserver(()=>loadForCurrentForm());
+          S.formMO.observe(form,{childList:true,subtree:true,characterData:true});
+          S.formMOStarted=true;
+          loadForCurrentForm();
+        }else if(!form && S.formMOStarted){
+          S.formMO.disconnect();
+          S.formMOStarted=false;
+        }
+      });
+      S.bodyMO.observe(document.body,{childList:true,subtree:true});
+    }
+    loadForCurrentForm();
+  }
+
+  function boot(){ wireNetwork(); wireObservers(); console.log("%c[WorkAttr]","color:#2aa","Ready (v6.3)"); }
+  if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded",boot); } else { boot(); }
+
 })();
 </script>
