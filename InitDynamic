@@ -72,7 +72,7 @@
         if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
           const $typeRow = $('label[for="issue-create-issue-type"]').parent();
           const issueType = $typeRow.children().eq(2).text();
-          if (issueType === "Service Delivery Demand" || "Solution Delivery Demand"){
+          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
             const hdr = $(".aui-page-header-inner").get(0);
             if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
             $projRow.hide();
@@ -126,21 +126,21 @@
 })();
 </script>
 
-<!-- ===================== 2) Tempo Work Attribute Helper — v6.9 ===================== -->
+<!-- ===================== 2) Tempo Work Attribute Helper — v7.0 ===================== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — v6.9
-   * - Robust on Create + Edit (Grid/List)
-   * - issueKey resolution: DOM → hidden issueKey → hidden issueId (Jira)
-   *   → worklogId/originId (Tempo GET body; tries with/without '/')
-   * - JSONP Task dropdown; hides native Task row
-   * - Warning + hard submit block (capture) + disable re-enforcement
-   * - Injects Task using server’s exact KEY **and** SHAPE (map or array)
+   * Tempo Work Attribute Helper — v7.0
+   * - Works in Create + Edit (Grid/List)
+   * - Robust issueKey resolution: DOM → hidden inputs → Jira issueId → Tempo worklog GET
+   * - Hides native Task row; provides custom Task dropdown (JSONP via ScriptRunner endpoint)
+   * - Shows AC warning on parent DM issues lacking Activity Code; disables submit (hard block)
+   * - Injects Task attribute into request bodies using DC map-of-objects:
+   *     "attributes": { "Task": { "key": "Task", "value": "<choice>" } }
    * ============================================================ */
 
   /* ---------- Config ---------- */
-  const ATTR_KEY         = "_Task_";             // used only to find the native row
+  const ATTR_KEY         = "_Task_";             // used ONLY to find native row
   const NATIVE_LABEL     = "Task";
   const CUSTOM_LABEL     = "Task";
   const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
@@ -168,8 +168,7 @@
     debounceTimer: null,
     worklogKeyCache: new Map(),   // worklogId -> issueKey
     lastWorklogId: null,
-    lastBlock: false,
-    attrShape: 0
+    lastBlock: false
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -238,64 +237,38 @@
     return m ? m[0].toUpperCase() : null;
   }
 
-  /* ---------- Attribute key + shape autodetect ---------- */
-  const ATTR_KEY_FALLBACK   = "Task";                // <— fallback key
+  /* ---------- Attribute helpers (DC map-of-objects) ---------- */
+  const ATTR_KEY_FALLBACK   = "Task";
   const ATTR_KEY_CANDIDATES = ["Task","_Task_","_Picker_"];
-
-  function normalizeName(s){ return String(s||"").toLowerCase().replace(/[^a-z]/g,""); }
+  const normalizeName = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
 
   function pickAttrKey(attrs){
-    if (attrs && typeof attrs === "object") {
-      const k1 = Object.keys(attrs).find(k => normalizeName(k) === "task");
+    if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
+      const keys = Object.keys(attrs);
+      const k1 = keys.find(k => normalizeName(k) === "task");
       if (k1) return k1;
       for (const cand of ATTR_KEY_CANDIDATES) if (cand in attrs) return cand;
     }
     return ATTR_KEY_FALLBACK;
   }
-  function setWorkAttrMap(attrs, value){
-    const key = pickAttrKey(attrs);
-    const synonyms = new Set([...ATTR_KEY_CANDIDATES, ATTR_KEY_FALLBACK]);
-    synonyms.delete(key);
-    for (const s of synonyms) delete attrs[s];
-    attrs[key] = value;
-    console.log("%c[WorkAttr]", "color:#2aa", "using key", key, "→", value);
-  }
 
-  const ATTR_SHAPES = { UNKNOWN:0, MAP:1, ARRAY:2 };
-  function pickAttrKeyFromArray(arr){
-    if (!Array.isArray(arr)) return null;
-    const f = arr.find(it => normalizeName(it?.key) === "task" || normalizeName(it?.name) === "task");
-    return (f && (f.key || f.name)) || null;
-  }
-  function ensureWorkAttrShape(obj, chosen){
+  // Ensure: "attributes": { "Task": { key:"Task", value:"<choice>" } }
+  function ensureTempoAttributes(obj, chosen){
     if (!obj) return;
-    // if we know the server likes array, or payload already is array → use array
-    if (Array.isArray(obj.attributes) || S.attrShape === ATTR_SHAPES.ARRAY){
-      const arr = Array.isArray(obj.attributes) ? obj.attributes.slice() : [];
-      const existingKey = pickAttrKeyFromArray(arr) || ATTR_KEY_FALLBACK;
-      const keepKeys = new Set([existingKey, ...ATTR_KEY_CANDIDATES]);
+    let attrs = obj.attributes;
+    if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) attrs = {};
 
-      let placed = false;
-      const out = [];
-      for (const it of arr){
-        const k = it?.key || it?.name;
-        if (keepKeys.has(k) || normalizeName(k) === "task"){
-          if (!placed){ out.push({ key: existingKey, value: chosen }); placed = true; }
-          // drop synonyms
-        } else {
-          out.push(it);
-        }
-      }
-      if (!placed) out.push({ key: existingKey, value: chosen });
-      obj.attributes = out;
-    } else {
-      // default: MAP
-      obj.attributes = obj.attributes || {};
-      setWorkAttrMap(obj.attributes, chosen);
-    }
+    const key = pickAttrKey(attrs);
+    Object.keys(attrs).forEach(k => {
+      if (normalizeName(k) === "task" && k !== key) delete attrs[k];
+    });
+
+    attrs[key] = { key, value: chosen };
+    obj.attributes = attrs;
+    console.log("%c[WorkAttr]", "color:#2aa", "injecting", { [key]: attrs[key] });
   }
 
-  /* ---------- Hidden helpers & resolvers ---------- */
+  /* ---------- Tempo/Jira helpers ---------- */
   function getHidden(form, names){
     for (const n of names){
       const el = form?.querySelector?.(`input[name="${n}"], [id="${n}"]`);
@@ -343,12 +316,6 @@
       if (j){
         let k   = j?.issue?.key || j?.issueKey || null;
         let iid = j?.issue?.id  || j?.issueId  || null;
-
-        // learn attribute SHAPE from GET body
-        const at = j?.attributes;
-        if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
-        else if (at && typeof at === "object") { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
-
         if (!k && iid){
           const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`);
           if (rx.ok){ const jj=await rx.json(); k = jj?.key || jj?.fields?.key || null; }
@@ -373,7 +340,7 @@
     if (key) setResolved(key,"URL");
   }
 
-  /* ---------- DOM task row helpers ---------- */
+  /* ---------- DOM Task row helpers ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
     let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
@@ -472,7 +439,7 @@
       .find(b=>/primary|aui-button-primary/i.test(b.className)) || null;
   }
 
-  /* ---------- Data & options ---------- */
+  /* ---------- JSONP options ---------- */
   function jsonp(url) {
     return new Promise((resolve, reject) => {
       const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
@@ -666,7 +633,7 @@
 
       XMLHttpRequest.prototype.send = function(body) {
         try{
-          // Hook XHR response to capture key & attribute shape from GET body
+          // Hook XHR GET /worklogs/{id} to learn issueKey
           if (!this.__workattrHooked){
             this.__workattrHooked = true;
             const orig = this.onreadystatechange;
@@ -680,11 +647,6 @@
                     const wlId = (j?.id || j?.worklogId);
                     const key  = j?.issue?.key || j?.issueKey;
                     const iid  = j?.issue?.id  || j?.issueId;
-
-                    const at = j?.attributes;
-                    if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
-                    else if (at && typeof at==='object') { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
-
                     if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"XHR:worklogBody"); }
                     else if (iid){
                       fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
@@ -710,9 +672,8 @@
             const sel  = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
-              // some nodes 500 on explicit nulls
-              if ("endDate" in obj && obj.endDate == null) delete obj.endDate;
-              ensureWorkAttrShape(obj, chosen);
+              if ("endDate" in obj && obj.endDate == null) delete obj.endDate; // defensive
+              ensureTempoAttributes(obj, chosen);
               body = JSON.stringify(obj);
               log("✅ Injected into XHR");
             }
@@ -732,7 +693,7 @@
           const meth = (init?.method || "GET").toUpperCase();
           sniffIssueKeyFromURL(url);
 
-          // Capture GET worklog body (learn key + attribute shape)
+          // Learn issueKey from GET worklog body
           if (/^GET$/i.test(meth) && /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+\/?$/i.test(url)){
             const res = await _fetch(input, init);
             try{
@@ -741,11 +702,6 @@
                 const wlId = (j?.id || j?.worklogId);
                 const key  = j?.issue?.key || j?.issueKey;
                 const iid  = j?.issue?.id  || j?.issueId;
-
-                const at = j?.attributes;
-                if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
-                else if (at && typeof at==='object') { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
-
                 if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"fetch:worklogBody"); }
                 else if (iid){
                   fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
@@ -766,8 +722,8 @@
               const sel  = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
-                if ("endDate" in obj && obj.endDate == null) delete obj.endDate;
-                ensureWorkAttrShape(obj, chosen);
+                if ("endDate" in obj && obj.endDate == null) delete obj.endDate; // defensive
+                ensureTempoAttributes(obj, chosen);
                 init = { ...init, body: JSON.stringify(obj) };
                 log("✅ Injected into fetch");
               }
@@ -803,7 +759,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.9)");
+    log("Ready (v7.0)");
   }
 
   if (document.readyState === "loading") {
