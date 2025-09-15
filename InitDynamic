@@ -1,145 +1,21 @@
-<font color="#00008f">
-<b>
-<ul>
-     <!--<li>Confluence Application will have a quick maintenance schedule:  <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font> Please save all work 30 Minutes before the change window to avoid any loss of data.</li>-->
-    <!--<li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li>-->
-    <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
-    <!--    <li>Tempo Charging for August - December 2024: <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a> </li> -->
-</ul>
-</b>
-</font>
-
-<style>
-#announcement-banner {
-    background-color:#9fd9b4;
-}
-</style>
-
-<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
-<script type="text/javascript">
-(function(){
-  // Prefer AJS.$, fallback to jQuery/$ if available
-  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
-
-  function removeIssueType(){
-    try{
-      const HIDE = new Set([
-        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
-        "Epic","Story","Task","Bug"
-      ]);
-      $(".aui-list-item-link").filter(function(){
-        return HIDE.has($(this).text().trim());
-      }).parent().hide();
-    }catch(e){}
-  }
-
-  function removeUnwantedIssueTypes(){
-    try{
-      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
-      $("#issuetype-field")
-        .off(".removeIssueType")
-        .on("keyup.removeIssueType", removeIssueType)
-        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
-      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
-        setTimeout(() => {
-          if (typeof window.findIssueType === "function") { window.findIssueType(); }
-          else { removeIssueType(); }
-        }, 1000);
-      });
-    }catch(e){}
-  }
-
-  function overwriteNewDemandNames(){
-    try{
-      const url = String(window.location.href);
-      if (url.includes("&demandnew=true")){
-        removeUnwantedIssueTypes();
-      }
-      if (url.includes("&demandcustomized=true")){
-        const hdr = $(".aui-page-header-inner").get(0);
-        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
-        $('label[for="issuetype-field"]').text("Demand Type");
-        $('label[for="issue-create-issue-type"]').text("Demand Type");
-        $('label[for="project-field"]').parent().hide();
-        $('label[for="issue-create-project-name"]').parent().hide();
-      } else if (url.includes("CreateIssue.jspa")){
-        const $projRow = $('label[for="issue-create-project-name"]').parent();
-        const projectName = $projRow.children().eq(1).text();
-        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
-          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
-          const issueType = $typeRow.children().eq(2).text();
-          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
-            const hdr = $(".aui-page-header-inner").get(0);
-            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
-            $projRow.hide();
-            $('label[for="issue-create-issue-type"]').text("Demand Type");
-          }
-        }
-      }
-    }catch(e){}
-  }
-
-  function addCSSRule(sheet, selector, rules, index){
-    try{
-      if (!sheet) return;
-      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
-      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
-    }catch(e){}
-  }
-
-  function hidePriority(){
-    try{
-      const p = window.location.pathname || "";
-      const qs = window.location.search || "";
-      const match = p.includes("RapidBoard.jspa") &&
-        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
-      if (match){
-        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
-        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
-      }
-    }catch(e){}
-  }
-
-  function replaceTAT(){
-    try{
-      if (window.JIRA && JIRA.ViewIssueTabs){
-        JIRA.ViewIssueTabs.onTabReady(function(){
-          const ttsSLA = $("#tts-sla-panel_heading");
-          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
-            ttsSLA.find(".toggle-title").last().text("TAT Panel");
-            ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
-          }
-        });
-      }
-    }catch(e){}
-  }
-
-  replaceTAT();
-  $(window).on("load", function(){
-    overwriteNewDemandNames();
-    hidePriority();
-  });
-})();
-</script>
-
-<!-- ===== Tempo Work Attribute Helper — Core v5 ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v5 (parent-only warning) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v5
-   * Changes vs v4.4:
-   *  - Warning-only: DO NOT disable the Log/Update button
-   *  - Fix isKTAXA() cached return bug
+   * Tempo Work Attribute Helper — Core v5 (parent-only warning)
+   * - PROD fallback key changed to _Task_
+   * - Warning shows only for parent DM issues (not sub-tasks, not Change Request)
+   * - No button disabling; warning only
    * Keeps:
-   *  - Avoid injecting "attributes" into Tempo search POSTs
-   *  - KTAXA bypass, DM Activity Code warning, JSONP Task select
-   *  - DOM+network issueKey discovery, observers
+   * - KTAXA bypass
+   * - JSONP Task select
+   * - Injection guard for Tempo search APIs
+   * - DOM + network issueKey discovery
    * ============================================================ */
 
   /* ---------- Config ---------- */
   const ATTR_ID        = 14;
-  const ATTR_KEY       = "_Task_";
+  const ATTR_KEY       = "_Task_";   // PROD fallback key
   const NATIVE_LABEL   = "Task";
   const CUSTOM_LABEL   = "Task (from API)";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
@@ -147,7 +23,14 @@
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set(["DM-50267", "DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"]);
+  const EXEMPT_ISSUES  = new Set([
+    "DM-36382",
+    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
+    "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
+    "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392",
+    "DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401",
+    "DM-47402","DM-47403","DM-47404","DM-47405"
+  ]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
 
@@ -159,7 +42,7 @@
     lastOptionsKey: null,
     selection: "",
     fetching: new Map(),
-    acCache: new Map(),
+    factsCache: new Map(),  // { ac:boolean, isSubtask:boolean, typeName:string }
     wiredXHR: false,
     wiredFetch: false,
     bodyMO: null,
@@ -194,7 +77,7 @@
   function getForm() { return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
-    if (S.ktaxa !== null) return S.ktaxa;  // fixed cached return
+    if (S.ktaxa !== null) return S.ktaxa;
     try {
       const r = await fetch("/rest/api/2/myself?expand=groups");
       if (!r.ok) throw 0;
@@ -331,30 +214,38 @@
     return p;
   }
 
-  async function hasActivityCode(issueKey) {
-    if (!issueKey) return false;
-    if (S.acCache.has(issueKey)) return S.acCache.get(issueKey);
-    const ok = await (async () => {
+  // Cache issue facts: activity code presence + isSubtask + issue type name
+  async function getIssueFacts(issueKey) {
+    if (!issueKey) return { ac:true, isSubtask:false, typeName:"" };
+    if (S.factsCache.has(issueKey)) return S.factsCache.get(issueKey);
+
+    const facts = await (async () => {
       try {
-        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`);
+        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD},issuetype,parent`);
         if (!r.ok) throw 0;
         const j = await r.json();
-        const v = j?.fields?.[AC_FIELD];
-        return !!(v && String(v).trim().length > 0);
+        const fields = j?.fields || {};
+        const acVal = fields?.[AC_FIELD];
+        const ac = !!(acVal && String(acVal).trim().length > 0);
+        const it = fields?.issuetype || {};
+        const isSubtask = (it?.subtask === true) || !!fields?.parent;
+        const typeName = (it?.name || "");
+        return { ac, isSubtask, typeName };
       } catch {
-        // Fail-open for AC lookup glitches (don't block)
-        return true;
+        // Fail-open: do not warn if we can't read facts
+        return { ac:true, isSubtask:false, typeName:"" };
       }
     })();
-    S.acCache.set(issueKey, ok);
-    return ok;
+
+    S.factsCache.set(issueKey, facts);
+    return facts;
   }
 
   /* ---------- Warning-only gate ---------- */
   async function applyGate(form) {
     if (!form) return;
 
-    // KTAXA: show native Task, no warning
+    // KTAXA: native Task, no warning
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
@@ -368,14 +259,16 @@
     const warnBox = getWarnBox(form);
     if (!key) { if (warnBox) warnBox.style.display = "none"; return; }
 
-    // Show warning if DM and not exempt and Activity Code is blank
+    // Only warn for parent DM issues (not sub-tasks, not Change Request)
+    let show = false;
     if (isDM(key) && !EXEMPT_ISSUES.has(key)) {
-      const ac = await hasActivityCode(key);
-      const show = !ac;
-      if (warnBox) warnBox.style.display = show ? "block" : "none";
-    } else {
-      if (warnBox) warnBox.style.display = "none";
+      const facts = await getIssueFacts(key);
+      const isChangeReq = /\bchange\s*request\b/i.test(facts.typeName || "");
+      if (!facts.isSubtask && !isChangeReq) {
+        show = !facts.ac;  // warn only if AC is blank
+      }
     }
+    if (warnBox) warnBox.style.display = show ? "block" : "none";
   }
 
   /* ---------- Main loader ---------- */
@@ -394,7 +287,6 @@
       }
 
       if (await isKTAXA()) {
-        // native field only, no custom host
         const row = findNativeTaskRow(form);
         if (row) row.classList.remove("workattr-hide-native");
         form.querySelector("#custom-workattr-host")?.remove();
@@ -446,7 +338,7 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards ---------- */
+  /* ---------- Injection guards (don’t touch Tempo searches) ---------- */
   function looksLikeCreateUpdate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
     if ("started" in bodyObj) return true;
@@ -458,7 +350,7 @@
     return false;
   }
 
-  /* ---------- Network wiring ---------- */
+  /* ---------- Network wiring (for attribute injection) ---------- */
   function wireNetwork() {
     // XHR
     if (!S.wiredXHR) {
@@ -538,7 +430,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v5)");
+    log("Ready (v5 parent-only warning)");
   }
 
   if (document.readyState === "loading") {
