@@ -1,4 +1,3 @@
-<!-- ===== Banner text ===== -->
 <font color="#00008f">
 <b>
 <ul>
@@ -11,31 +10,41 @@
 </font>
 
 <style>
-  #announcement-banner { background-color:#9fd9b4; }
+#announcement-banner { background-color:#9fd9b4; }
+/* helper dim style for disabled dialog button */
+.workattr-disabled-btn{ pointer-events:none !important; opacity:.6 !important; }
 </style>
 
 <!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
 <script type="text/javascript">
 (function(){
+  // Prefer AJS.$, fallback to jQuery/$ if available
   const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) return;
+  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
 
   function removeIssueType(){
     try{
-      const HIDE = new Set(["Onboard Entity User","Onboard Platform User","Defect","Feedback","Epic","Story","Task","Bug"]);
-      $(".aui-list-item-link").filter(function(){ return HIDE.has($(this).text().trim()); }).parent().hide();
+      const HIDE = new Set([
+        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
+        "Epic","Story","Task","Bug"
+      ]);
+      $(".aui-list-item-link").filter(function(){
+        return HIDE.has($(this).text().trim());
+      }).parent().hide();
     }catch(e){}
   }
 
   function removeUnwantedIssueTypes(){
     try{
       $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
-      $("#issuetype-field").off(".removeIssueType")
+      $("#issuetype-field")
+        .off(".removeIssueType")
         .on("keyup.removeIssueType", removeIssueType)
         .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
       $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
         setTimeout(() => {
-          if (typeof window.findIssueType === "function") window.findIssueType(); else removeIssueType();
+          if (typeof window.findIssueType === "function") { window.findIssueType(); }
+          else { removeIssueType(); }
         }, 1000);
       });
     }catch(e){}
@@ -44,10 +53,10 @@
   function overwriteNewDemandNames(){
     try{
       const url = String(window.location.href);
-      if (url.includes("&demandnew=true")) removeUnwantedIssueTypes();
+      if (url.includes("&demandnew=true")){ removeUnwantedIssueTypes(); }
       if (url.includes("&demandcustomized=true")){
         const hdr = $(".aui-page-header-inner").get(0);
-        if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
+        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
         $('label[for="issuetype-field"]').text("Demand Type");
         $('label[for="issue-create-issue-type"]').text("Demand Type");
         $('label[for="project-field"]').parent().hide();
@@ -60,7 +69,7 @@
           const issueType = $typeRow.children().eq(2).text();
           if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
             const hdr = $(".aui-page-header-inner").get(0);
-            if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
+            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
             $projRow.hide();
             $('label[for="issue-create-issue-type"]').text("Demand Type");
           }
@@ -72,8 +81,8 @@
   function addCSSRule(sheet, selector, rules, index){
     try{
       if (!sheet) return;
-      if ("insertRule" in sheet) sheet.insertRule(`${selector}{${rules}}`, index);
-      else if ("addRule" in sheet) sheet.addRule(selector, rules, index);
+      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
+      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
     }catch(e){}
   }
 
@@ -81,7 +90,8 @@
     try{
       const p = window.location.pathname || "";
       const qs = window.location.search || "";
-      const match = p.includes("RapidBoard.jspa") && (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      const match = p.includes("RapidBoard.jspa") &&
+        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
       if (match){
         const sheet = (document.styleSheets && document.styleSheets[0]) || null;
         addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
@@ -111,35 +121,40 @@
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.4 (PROD) ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v6 (dialog-scoped disable) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * v6.4 highlights:
-   *  - Dialog button stays disabled while WARNING is visible (continuous sentinel)
-   *  - Never touches the page-level "Log Time" menu button
-   *  - _Task_ key (PROD), parent-only warning, exemptions
-   *  - POST-only injection; edit (PUT) never altered
-   *  - Refill options after save/cancel if needed
+   * Tempo Work Attribute Helper — Core v6 (prod)
+   * - Dialog-scoped button detection (no effect on top menu)
+   * - Disable button when warning is shown OR Task is empty
+   * - Parent-only warning (no warning for Sub-task / Change Request)
+   * - KTAXA bypass
+   * - JSONP dynamic Task options
+   * - Safe network injection to avoid Tempo search 500s
    * ============================================================ */
 
   /* ---------- Config ---------- */
-  const ATTR_KEY         = "_Task_";                // *** PROD key ***
-  const NATIVE_LABEL     = "Task";
-  const CUSTOM_LABEL     = "Task";
-  const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD         = "customfield_17447";
+  const ATTR_KEY       = "_Task_";  // <-- PROD Tempo attribute key
+  const NATIVE_LABEL   = "Task";
+  const CUSTOM_LABEL   = "Task";    // no "(from API)"
+  const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
+  const AC_FIELD       = "customfield_17447";
+  const AC_WARN_TEXT   =
+    'Log Time is disabled since Activity Code is not yet available. ' +
+    'Please select your Domain BAU demand to log it temporarily to BAU.';
+  const EXEMPT_ISSUES  = new Set([
+    // your exempt DM keys (keep in sync with prod list)
+    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240",
+    "DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244",
+    "DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410",
+    "DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396",
+    "DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404",
+    "DM-47405"
+  ]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
-
-  const EXEMPT_ISSUES = new Set([
-    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
-    "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
-    "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484",
-    "DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399",
-    "DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"
-  ]);
-  const SUBTASK_LIKE_TYPES = new Set(["Sub-task","Change Request"]);
+  const SENTINEL_MS = 2000;
 
   /* ---------- State ---------- */
   const S = {
@@ -150,41 +165,22 @@
     selection: "",
     fetching: new Map(),
     acCache: new Map(),
-    typeCache: new Map(),
+    typeCache: new Map(), // cache issuetype/parent
     wiredXHR: false,
     wiredFetch: false,
     bodyMO: null,
     formMO: null,
     formMOStarted: false,
     debounceTimer: null,
-    blocked: false,
-    sentinel: null
+    sentinelTimer: null
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
   const warn = (...a) => console.warn("%c[WorkAttr]", "color:#d80", ...a);
-
-  /* ---------- CSS ---------- */
-  function onceStyle() {
-    if (document.getElementById("workattr-style")) return;
-    const css = `
-      .workattr-hide-native{ display:none !important; }
-      .custom-workattr-host{ margin:0 0 8px; }
-      .custom-workattr-label{ font-weight:600; display:block; margin-bottom:6px; }
-      .custom-workattr-select{ width:100%; height:40px; }
-      .custom-workattr-warning{ color:#c00; font-size:.85rem; margin-top:6px; }
-      .workattr-disabled-btn{ pointer-events:none !important; opacity:.6 !important; }
-    `;
-    const el = document.createElement("style");
-    el.id = "workattr-style";
-    el.textContent = css;
-    document.head.appendChild(el);
-  }
-
-  /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
-  function getForm(){ return document.querySelector("#worklogForm"); }
+
+  function getForm() { return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
@@ -245,7 +241,7 @@
   /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
-    let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);  // e.g. for="_Task_"
+    let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
     if (!lab) lab = [...form.querySelectorAll("label")]
       .find(l => (l.textContent || "").trim().toLowerCase() === NATIVE_LABEL.toLowerCase());
     if (!lab) return null;
@@ -270,9 +266,7 @@
       <select id="custom-workattr-select" class="custom-workattr-select">
         <option value="">Select an option...</option>
       </select>
-      <div id="custom-workattr-warning" class="custom-workattr-warning" style="display:none;">
-        Log Time is disabled since Activity Code is not yet available. Please select your Domain BAU demand to log it temporarily to BAU.
-      </div>
+      <div id="custom-workattr-warning" class="custom-workattr-warning" style="display:none;">${AC_WARN_TEXT}</div>
     `;
     row.parentElement?.insertBefore(host, row.nextSibling);
     return host;
@@ -280,11 +274,47 @@
 
   function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
   function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
-  function getSubmitBtn(form){
-    let b = form?.querySelector('button[name="submitWorklogButton"]');
-    if (b) return b;
-    const buttons = [...(form?.querySelectorAll('button') || [])];
-    return buttons.find(x => /^(log time|update)$/i.test((x.textContent || '').trim())) || null;
+
+  /* ---------- Button (dialog-scoped) ---------- */
+  function getDialogRoot(form) {
+    const anchor = form?.querySelector('#custom-workattr-host') || form || document.body;
+    return anchor.closest('[role="dialog"], .aui-dialog2, [data-testid*="dialog"], [data-test-id*="dialog"]');
+  }
+
+  function getSubmitBtn(form) {
+    const dlg = getDialogRoot(form);
+    if (!dlg) return null;
+    const candidates = [...dlg.querySelectorAll('button, [role="button"]')];
+    return candidates.find(b => {
+      const text = (b.textContent || '').trim();
+      const name = (b.getAttribute('name') || '').toLowerCase();
+      return /^(log time|update)$/i.test(text) || name.includes('submitworklogbutton');
+    }) || null;
+  }
+
+  function setSubmitBlocked(form, blocked) {
+    const btn = getSubmitBtn(form);
+    if (btn) {
+      btn.disabled = !!blocked;
+      btn.setAttribute("data-state", blocked ? "not-active" : "active");
+      btn.setAttribute("aria-disabled", String(!!blocked));
+      btn.classList.toggle("workattr-disabled-btn", !!blocked);
+    }
+    if (S.sentinelTimer) { clearInterval(S.sentinelTimer); S.sentinelTimer = null; }
+    if (blocked) {
+      const start = Date.now();
+      S.sentinelTimer = setInterval(() => {
+        const f = getForm(); if (!f) return;
+        const b = getSubmitBtn(f); if (!b) return;
+        b.disabled = true;
+        b.setAttribute("data-state","not-active");
+        b.setAttribute("aria-disabled","true");
+        b.classList.add("workattr-disabled-btn");
+        if (Date.now() - start > SENTINEL_MS) {
+          clearInterval(S.sentinelTimer); S.sentinelTimer = null;
+        }
+      }, 120);
+    }
   }
 
   function fillSelect(select, options, preselect) {
@@ -302,40 +332,6 @@
     if (preselect && keep.has(preselect)) select.value = preselect;
   }
 
-  /* ---------- Warning + Disable (with watchdog) ---------- */
-  function setSubmitBlocked(form, blocked) {
-    const btn = getSubmitBtn(form);
-    S.blocked = !!blocked;
-
-    if (btn) {
-      btn.disabled = S.blocked;
-      btn.setAttribute("data-state", S.blocked ? "not-active" : "active");
-      btn.setAttribute("aria-disabled", String(S.blocked));
-      btn.classList.toggle("workattr-disabled-btn", S.blocked);
-    }
-
-    // Watchdog: keep button disabled while blocked is true
-    if (S.blocked) {
-      if (!S.sentinel) {
-        S.sentinel = setInterval(() => {
-          const f = getForm();
-          if (!f) { clearInterval(S.sentinel); S.sentinel = null; return; }
-          if (!S.blocked) { clearInterval(S.sentinel); S.sentinel = null; return; }
-          const b = getSubmitBtn(f);
-          if (b) {
-            b.disabled = true;
-            b.setAttribute("data-state", "not-active");
-            b.setAttribute("aria-disabled", "true");
-            b.classList.add("workattr-disabled-btn");
-          }
-        }, 200);
-      }
-    } else if (S.sentinel) {
-      clearInterval(S.sentinel);
-      S.sentinel = null;
-    }
-  }
-
   /* ---------- Data ---------- */
   function jsonp(url) {
     return new Promise((resolve, reject) => {
@@ -344,7 +340,6 @@
       const src = `${url}${sep}callback=${cb}`;
       const s = document.createElement("script");
       let done = false;
-
       window[cb] = (data) => { if (done) return; done = true; cleanup(); resolve(data); };
       function cleanup(){ try{delete window[cb]}catch{} s.remove(); }
       s.onerror = () => { if (done) return; done = true; cleanup(); reject(new Error("JSONP failed")); };
@@ -376,57 +371,65 @@
         const j = await r.json();
         const v = j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length > 0);
-      } catch { return true; }
+      } catch {
+        // fail-open (don’t block if Jira read fails)
+        return true;
+      }
     })();
     S.acCache.set(issueKey, ok);
     return ok;
   }
 
-  async function isParentIssue(issueKey){
-    if (!issueKey) return false;
+  async function isParentIssue(issueKey) {
+    if (!issueKey) return true;
     if (S.typeCache.has(issueKey)) return S.typeCache.get(issueKey);
     const val = await (async () => {
-      try{
-        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=issuetype`);
+      try {
+        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=issuetype,parent`);
         if (!r.ok) throw 0;
         const j = await r.json();
         const it = j?.fields?.issuetype || {};
-        const name = String(it?.name || "");
-        const isSubtask = !!it?.subtask || SUBTASK_LIKE_TYPES.has(name);
-        return !isSubtask;
-      }catch{ return true; }
+        const isSubtask = !!it?.subtask;
+        const name = (it?.name || "").toLowerCase();
+        if (isSubtask) return false;
+        if (name === "change request") return false;
+        return true;
+      } catch { return true; }
     })();
     S.typeCache.set(issueKey, val);
     return val;
   }
 
-  /* ---------- Gate ---------- */
+  /* ---------- Gate (warn + disable) ---------- */
   async function applyGate(form) {
     if (!form) return;
 
+    // KTAXA: show native Task, no warn, no disable
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
       form.querySelector("#custom-workattr-host")?.remove();
-      S.blocked = false;
+      const warnBox = getWarnBox(form);
+      if (warnBox) warnBox.style.display = "none";
+      setSubmitBlocked(form, false);
       return;
     }
 
-    const key      = S.lastIssueKey;
-    const select   = getCustomSelect(form);
-    const warnBox  = getWarnBox(form);
-    const hasTask  = !!(select && select.value);
+    const key = S.lastIssueKey;
+    const warnBox = getWarnBox(form);
+    const select = getCustomSelect(form);
+    const hasTask = !!(select && select.value);
 
     let showWarn = false;
-    if (key && isDM(key)) {
-      if (!EXEMPT_ISSUES.has(key)) {
-        const [parent, ac] = await Promise.all([isParentIssue(key), hasActivityCode(key)]);
-        showWarn = parent && !ac;
+    if (key && isDM(key) && !EXEMPT_ISSUES.has(key)) {
+      if (await isParentIssue(key)) {
+        const ac = await hasActivityCode(key);
+        showWarn = !ac;
       }
     }
-    if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
 
-    // Disable when warning is shown OR no task chosen
+    if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
+    // Disable when warning OR no task selected
     setSubmitBlocked(form, showWarn || !hasTask);
   }
 
@@ -449,17 +452,17 @@
         const row = findNativeTaskRow(form);
         if (row) row.classList.remove("workattr-hide-native");
         form.querySelector("#custom-workattr-host")?.remove();
-        S.blocked = false;
+        const warnBox = getWarnBox(form);
+        if (warnBox) warnBox.style.display = "none";
+        setSubmitBlocked(form, false);
         return;
       }
 
-      onceStyle();
-      const host   = ensureCustomHost(form);
+      const host = ensureCustomHost(form);
       if (!host) return;
 
       const select = getCustomSelect(form);
-      const needRefill = !select || select.options.length <= 1;
-      if (needRefill || S.lastOptionsKey !== issueKey) {
+      if (S.lastOptionsKey !== issueKey) {
         const options = await fetchOptionsFor(issueKey).catch(() => []);
         S.lastOptionsKey = issueKey;
         fillSelect(select, options, S.selection);
@@ -474,6 +477,8 @@
       }
 
       await applyGate(form);
+      // tiny re-check to catch React remounts
+      setTimeout(() => applyGate(form), 80);
     }, OBSERVE_DEBOUNCE_MS);
   }
 
@@ -498,9 +503,15 @@
   }
 
   /* ---------- Injection guards ---------- */
-  function looksLikeTempoCreate(bodyObj) {
+  function looksLikeCreateUpdate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
-    return ("started" in bodyObj && "timeSpentSeconds" in bodyObj);
+    if ("started" in bodyObj) return true;
+    if ("timeSpentSeconds" in bodyObj) return true;
+    if ("originTaskId" in bodyObj) return true;
+    if ("issueId" in bodyObj) return true;
+    if ("from" in bodyObj || "to" in bodyObj) return false;
+    if ("offset" in bodyObj || "limit" in bodyObj) return false;
+    return false;
   }
 
   /* ---------- Network wiring ---------- */
@@ -521,23 +532,25 @@
       XMLHttpRequest.prototype.send = function(body) {
         try {
           if (S.ktaxa === true) return _send.call(this, body);
-          const isPOST = (this.__method || "") === "POST";
-          if (!isPOST || !body || typeof body !== "string") {
+          const isMutating = /POST|PUT/.test(this.__method || "");
+          if (!isMutating || !body || typeof body !== "string") {
             return _send.call(this, body);
           }
           let obj; try { obj = JSON.parse(body); } catch { obj = null; }
-          if (looksLikeTempoCreate(obj)) {
+          if (looksLikeCreateUpdate(obj)) {
             const form = getForm();
             const sel = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
               obj.attributes = obj.attributes || {};
-              obj.attributes[ATTR_KEY] = chosen;   // *** _Task_ ***
+              obj.attributes[ATTR_KEY] = chosen; // inject using key
               body = JSON.stringify(obj);
-              log("✅ Injected into XHR (POST)", { [ATTR_KEY]: chosen });
+              log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) { warn("XHR inject skipped:", e); }
+        } catch (e) {
+          warn("XHR inject skipped due to error:", e);
+        }
         return _send.call(this, body);
       };
     }
@@ -551,24 +564,24 @@
           const url  = typeof input === "string" ? input : (input?.url || "");
           const meth = (init?.method || "GET").toUpperCase();
           sniffIssueKeyFromURL(url);
-
           if (S.ktaxa === true) return _fetch(input, init);
-
-          if (meth === "POST" && init?.body && typeof init.body === "string") {
+          if (/POST|PUT/.test(meth) && init?.body && typeof init.body === "string") {
             let obj; try { obj = JSON.parse(init.body); } catch { obj = null; }
-            if (looksLikeTempoCreate(obj)) {
+            if (looksLikeCreateUpdate(obj)) {
               const form = getForm();
               const sel = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
                 obj.attributes = obj.attributes || {};
-                obj.attributes[ATTR_KEY] = chosen; // *** _Task_ ***
+                obj.attributes[ATTR_KEY] = chosen;
                 init = { ...init, body: JSON.stringify(obj) };
-                log("✅ Injected into fetch (POST)", { [ATTR_KEY]: chosen });
+                log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
               }
             }
           }
-        } catch (e) { warn("fetch inject skipped:", e); }
+        } catch (e) {
+          warn("fetch inject skipped due to error:", e);
+        }
         return _fetch(input, init);
       };
     }
@@ -576,10 +589,9 @@
 
   /* ---------- Boot ---------- */
   function boot() {
-    onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.4 PROD)");
+    log("Ready (v6 dialog-scoped)");
   }
 
   if (document.readyState === "loading") {
