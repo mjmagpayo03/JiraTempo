@@ -1,154 +1,34 @@
-<font color="#00008f">
-<b>
-<ul>
-     <!--<li>Confluence Application will have a quick maintenance schedule:  <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font> Please save all work 30 Minutes before the change window to avoid any loss of data.</li>-->
-    <!--<li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li>-->
-    <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
-    <!--    <li>Tempo Charging for August - December 2024: <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a> </li> -->
-</ul>
-</b>
-</font>
-
-<style>
-#announcement-banner {
-    background-color:#9fd9b4;
-}
-</style>
-
-<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
-<script type="text/javascript">
-(function(){
-  // Prefer AJS.$, fallback to jQuery/$ if available
-  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
-
-  function removeIssueType(){
-    try{
-      const HIDE = new Set([
-        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
-        "Epic","Story","Task","Bug"
-      ]);
-      $(".aui-list-item-link").filter(function(){
-        return HIDE.has($(this).text().trim());
-      }).parent().hide();
-    }catch(e){}
-  }
-
-  function removeUnwantedIssueTypes(){
-    try{
-      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
-      $("#issuetype-field")
-        .off(".removeIssueType")
-        .on("keyup.removeIssueType", removeIssueType)
-        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
-      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
-        setTimeout(() => {
-          if (typeof window.findIssueType === "function") { window.findIssueType(); }
-          else { removeIssueType(); }
-        }, 1000);
-      });
-    }catch(e){}
-  }
-
-  function overwriteNewDemandNames(){
-    try{
-      const url = String(window.location.href);
-      if (url.includes("&demandnew=true")){
-        removeUnwantedIssueTypes();
-      }
-      if (url.includes("&demandcustomized=true")){
-        const hdr = $(".aui-page-header-inner").get(0);
-        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
-        $('label[for="issuetype-field"]').text("Demand Type");
-        $('label[for="issue-create-issue-type"]').text("Demand Type");
-        $('label[for="project-field"]').parent().hide();
-        $('label[for="issue-create-project-name"]').parent().hide();
-      } else if (url.includes("CreateIssue.jspa")){
-        const $projRow = $('label[for="issue-create-project-name"]').parent();
-        const projectName = $projRow.children().eq(1).text();
-        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
-          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
-          const issueType = $typeRow.children().eq(2).text();
-          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
-            const hdr = $(".aui-page-header-inner").get(0);
-            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
-            $projRow.hide();
-            $('label[for="issue-create-issue-type"]').text("Demand Type");
-          }
-        }
-      }
-    }catch(e){}
-  }
-
-  function addCSSRule(sheet, selector, rules, index){
-    try{
-      if (!sheet) return;
-      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
-      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
-    }catch(e){}
-  }
-
-  function hidePriority(){
-    try{
-      const p = window.location.pathname || "";
-      const qs = window.location.search || "";
-      const match = p.includes("RapidBoard.jspa") &&
-        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
-      if (match){
-        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
-        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
-      }
-    }catch(e){}
-  }
-
-  function replaceTAT(){
-    try{
-      if (window.JIRA && JIRA.ViewIssueTabs){
-        JIRA.ViewIssueTabs.onTabReady(function(){
-          const ttsSLA = $("#tts-sla-panel_heading");
-          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
-            ttsSLA.find(".toggle-title").last().text("TAT Panel");
-            ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
-          }
-        });
-      }
-    }catch(e){}
-  }
-
-  replaceTAT();
-  $(window).on("load", function(){
-    overwriteNewDemandNames();
-    hidePriority();
-  });
-})();
-</script>
-
-<!-- ===== Tempo Work Attribute Helper — Core v5 ===== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v5
-   * Changes vs v4.4:
-   *  - Warning-only: DO NOT disable the Log/Update button
-   *  - Fix isKTAXA() cached return bug
-   * Keeps:
-   *  - Avoid injecting "attributes" into Tempo search POSTs
-   *  - KTAXA bypass, DM Activity Code warning, JSONP Task select
-   *  - DOM+network issueKey discovery, observers
+   * Tempo Work Attribute Helper — Core v5.4 (Prod)
+   * - Warning-only (no button disable)
+   * - KTAXA bypass
+   * - JSONP Task options
+   * - Parent-only warning (no warning for subtasks/CR)
+   * - DOM + network discovery of issueKey
+   * - NEW: list-view Edit support by sniffing worklogId from network
+   * - Label is "Task"
    * ============================================================ */
 
-  /* ---------- Config ---------- */
+  /* ---------- Config (PROD) ---------- */
   const ATTR_ID        = 14;
   const ATTR_KEY       = "_Task_";
   const NATIVE_LABEL   = "Task";
-  const CUSTOM_LABEL   = "Task (from API)";
+  const CUSTOM_LABEL   = "Task";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
   const AC_FIELD       = "customfield_17447";
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
-  const EXEMPT_ISSUES  = new Set(["DM-50267", "DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"]);
-  const KTAXA_GROUP_NAME = "DM-KTAXA";
+  const EXEMPT_ISSUES  = new Set([
+    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
+    "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
+    "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392",
+    "DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401",
+    "DM-47402","DM-47403","DM-47404","DM-47405"
+  ]);
+  const KTAXA_GROUP_NAME   = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
 
   /* ---------- State ---------- */
@@ -160,6 +40,8 @@
     selection: "",
     fetching: new Map(),
     acCache: new Map(),
+    jiraCache: new Map(),
+    lastSeenWorklogId: null,       // <— NEW: from network sniff
     wiredXHR: false,
     wiredFetch: false,
     bodyMO: null,
@@ -190,11 +72,10 @@
   /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
-
-  function getForm() { return document.querySelector("#worklogForm"); }
+  function getForm(){ return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
-    if (S.ktaxa !== null) return S.ktaxa;  // fixed cached return
+    if (S.ktaxa !== null) return S.ktaxa;
     try {
       const r = await fetch("/rest/api/2/myself?expand=groups");
       if (!r.ok) throw 0;
@@ -205,34 +86,36 @@
     return S.ktaxa;
   }
 
+  /* ---------- Resolve issueKey ---------- */
   function extractIssueKeyFromDOM(form) {
     if (!form) return null;
     for (const a of form.querySelectorAll('a[href*="/browse/"]')) {
-      const m = (a.getAttribute('href') || '').match(RX_KEY);
+      const m = (a.getAttribute("href") || "").match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
     for (const el of form.querySelectorAll('[data-issue-key],[data-issueKey],[data-testid*="issue"],[data-test-id*="issue"]')) {
       const bag = [
-        el.getAttribute('data-issue-key') || '',
-        el.getAttribute('data-issueKey')  || '',
-        el.getAttribute('data-testid')    || '',
-        el.getAttribute('data-test-id')   || '',
-        el.textContent || ''
-      ].join(' ');
+        el.getAttribute("data-issue-key") || "",
+        el.getAttribute("data-issueKey")  || "",
+        el.getAttribute("data-testid")    || "",
+        el.getAttribute("data-test-id")   || "",
+        el.textContent || ""
+      ].join(" ");
       const m = bag.match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
     const desc = form.querySelector('#comment, textarea[id*="comment"]');
     if (desc) {
-      const m = (desc.value || '').match(RX_KEY);
+      const m = (desc.value || "").match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
-    const m = (form.textContent || '').match(RX_KEY);
+    const m = (form.textContent || "").match(RX_KEY);
     return m ? m[0].toUpperCase() : null;
   }
 
-  function sniffIssueKeyFromURL(url) {
+  function sniffFromURL(url) {
     if (!url) return;
+    // issueKey
     let key = null;
     const mQ = url.match(/[?&]issueKey=([^&#]+)/i);
     if (mQ) key = decodeURIComponent(mQ[1]);
@@ -247,6 +130,43 @@
         if (getForm()) setTimeout(loadForCurrentForm, 0);
       }
     }
+    // worklogId (NEW)
+    const mWq = url.match(/[?&](?:worklogId|id)=(\d+)/i);
+    const mW1 = url.match(/\/worklogs\/(\d+)/i);
+    const wl = (mWq && mWq[1]) || (mW1 && mW1[1]) || null;
+    if (wl) S.lastSeenWorklogId = wl;
+  }
+
+  function getWorklogIdFromForm(form){
+    return (
+      form?.getAttribute("data-worklog-id") ||
+      form?.querySelector("[data-worklog-id]")?.getAttribute("data-worklog-id") ||
+      form?.querySelector('input[name="worklogId"]')?.value ||
+      form?.querySelector('input[name="id"]')?.value ||
+      null
+    );
+  }
+
+  async function resolveIssueKeyViaWorklogId(worklogId) {
+    if (!worklogId) return null;
+    const tries = [
+      `/rest/tempo-timesheets/4/worklogs/${worklogId}`,
+      `/rest/tempo-core/4/worklogs/${worklogId}`,
+      `/rest/tempo-core/3/worklogs/${worklogId}`,
+      `/rest/tempo-core/1/worklogs/${worklogId}`
+    ];
+    for (const url of tries) {
+      try {
+        const r = await fetch(url, { credentials: "same-origin" });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const key =
+          (j?.issue && (j.issue.key || j.issue?.issueKey)) ||
+          j?.issueKey || j?.key || null;
+        if (key) return String(key).toUpperCase();
+      } catch {}
+    }
+    return null;
   }
 
   /* ---------- DOM task row ---------- */
@@ -266,7 +186,6 @@
 
     const row = findNativeTaskRow(form);
     if (!row) return null;
-
     row.classList.add("workattr-hide-native");
 
     host = document.createElement("div");
@@ -301,7 +220,7 @@
     if (preselect && keep.has(preselect)) select.value = preselect;
   }
 
-  /* ---------- Data ---------- */
+  /* ---------- Data helpers ---------- */
   function jsonp(url) {
     return new Promise((resolve, reject) => {
       const cb = "tempoWorkAttrCB_" + Math.random().toString(36).slice(2);
@@ -309,7 +228,6 @@
       const src = `${url}${sep}callback=${cb}`;
       const s = document.createElement("script");
       let done = false;
-
       window[cb] = (data) => { if (done) return; done = true; cleanup(); resolve(data); };
       function cleanup(){ try{delete window[cb]}catch{} s.remove(); }
       s.onerror = () => { if (done) return; done = true; cleanup(); reject(new Error("JSONP failed")); };
@@ -331,48 +249,57 @@
     return p;
   }
 
+  async function getJiraIssue(issueKey) {
+    if (!issueKey) return null;
+    if (S.jiraCache.has(issueKey)) return S.jiraCache.get(issueKey);
+    try {
+      const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD},issuetype,parent`);
+      if (!r.ok) throw 0;
+      const j = await r.json();
+      S.jiraCache.set(issueKey, j);
+      return j;
+    } catch { return null; }
+  }
+
   async function hasActivityCode(issueKey) {
     if (!issueKey) return false;
     if (S.acCache.has(issueKey)) return S.acCache.get(issueKey);
-    const ok = await (async () => {
-      try {
-        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD}`);
-        if (!r.ok) throw 0;
-        const j = await r.json();
-        const v = j?.fields?.[AC_FIELD];
-        return !!(v && String(v).trim().length > 0);
-      } catch {
-        // Fail-open for AC lookup glitches (don't block)
-        return true;
-      }
-    })();
+    let ok = true;
+    try {
+      const j = await getJiraIssue(issueKey);
+      const v = j?.fields?.[AC_FIELD];
+      ok = !!(v && String(v).trim().length > 0);
+    } catch { ok = true; }
     S.acCache.set(issueKey, ok);
     return ok;
+  }
+
+  async function isSubtaskOrCR(issueKey) {
+    const j = await getJiraIssue(issueKey);
+    const typeName = (j?.fields?.issuetype?.name || "").toLowerCase();
+    const hasParent = !!j?.fields?.parent;
+    return hasParent || /change\s*request/i.test(typeName);
   }
 
   /* ---------- Warning-only gate ---------- */
   async function applyGate(form) {
     if (!form) return;
-
-    // KTAXA: show native Task, no warning
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
       form.querySelector("#custom-workattr-host")?.remove();
-      const warnBox = getWarnBox(form);
-      if (warnBox) warnBox.style.display = "none";
+      const warnBox = getWarnBox(form); if (warnBox) warnBox.style.display = "none";
       return;
     }
-
     const key = S.lastIssueKey;
     const warnBox = getWarnBox(form);
     if (!key) { if (warnBox) warnBox.style.display = "none"; return; }
 
-    // Show warning if DM and not exempt and Activity Code is blank
     if (isDM(key) && !EXEMPT_ISSUES.has(key)) {
+      const skip = await isSubtaskOrCR(key);
+      if (skip) { if (warnBox) warnBox.style.display = "none"; return; }
       const ac = await hasActivityCode(key);
-      const show = !ac;
-      if (warnBox) warnBox.style.display = show ? "block" : "none";
+      if (warnBox) warnBox.style.display = ac ? "none" : "block";
     } else {
       if (warnBox) warnBox.style.display = "none";
     }
@@ -385,21 +312,25 @@
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer = setTimeout(async () => {
-      const issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey;
-      if (!issueKey) { warn("issueKey not found"); return; }
+      let issueKey =
+        extractIssueKeyFromDOM(form) ||
+        S.lastSeenIssueKey ||
+        null;
 
-      if (S.lastIssueKey !== issueKey) {
-        S.lastIssueKey = issueKey;
-        S.selection = "";
+      if (!issueKey) {
+        const wlId = getWorklogIdFromForm(form) || S.lastSeenWorklogId || null;
+        if (wlId) issueKey = await resolveIssueKeyViaWorklogId(wlId);
       }
 
+      if (!issueKey) { warn("issueKey not found"); return; }
+
+      if (S.lastIssueKey !== issueKey) { S.lastIssueKey = issueKey; S.selection = ""; }
+
       if (await isKTAXA()) {
-        // native field only, no custom host
         const row = findNativeTaskRow(form);
         if (row) row.classList.remove("workattr-hide-native");
         form.querySelector("#custom-workattr-host")?.remove();
-        const warnBox = getWarnBox(form);
-        if (warnBox) warnBox.style.display = "none";
+        const warnBox = getWarnBox(form); if (warnBox) warnBox.style.display = "none";
         return;
       }
 
@@ -416,10 +347,7 @@
 
       if (!select.__workattrBound) {
         select.__workattrBound = true;
-        select.addEventListener("change", () => {
-          S.selection = select.value || "";
-          applyGate(form);
-        });
+        select.addEventListener("change", () => { S.selection = select.value || ""; applyGate(form); });
       }
 
       await applyGate(form);
@@ -437,8 +365,7 @@
           S.formMOStarted = true;
           loadForCurrentForm();
         } else if (!form && S.formMOStarted) {
-          S.formMO.disconnect();
-          S.formMOStarted = false;
+          S.formMO.disconnect(); S.formMOStarted = false;
         }
       });
       S.bodyMO.observe(document.body, { childList: true, subtree: true });
@@ -446,7 +373,7 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards ---------- */
+  /* ---------- Injection guards (unchanged) ---------- */
   function looksLikeCreateUpdate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
     if ("started" in bodyObj) return true;
@@ -460,16 +387,14 @@
 
   /* ---------- Network wiring ---------- */
   function wireNetwork() {
-    // XHR
     if (!S.wiredXHR) {
       S.wiredXHR = true;
       const _open = XMLHttpRequest.prototype.open;
       const _send = XMLHttpRequest.prototype.send;
 
       XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        try { sniffIssueKeyFromURL(url); } catch {}
-        this.__url = url || "";
-        this.__method = (method || "").toUpperCase();
+        try { sniffFromURL(url); } catch {}
+        this.__url = url || ""; this.__method = (method || "").toUpperCase();
         return _open.call(this, method, url, ...rest);
       };
 
@@ -477,29 +402,21 @@
         try {
           if (S.ktaxa === true) return _send.call(this, body);
           const isMutating = /POST|PUT/.test(this.__method || "");
-          if (!isMutating || !body || typeof body !== "string") {
-            return _send.call(this, body);
-          }
+          if (!isMutating || !body || typeof body !== "string") return _send.call(this, body);
           let obj; try { obj = JSON.parse(body); } catch { obj = null; }
           if (looksLikeCreateUpdate(obj)) {
-            const form = getForm();
-            const sel = form && getCustomSelect(form);
+            const form = getForm(); const sel = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
-              obj.attributes = obj.attributes || {};
-              obj.attributes[ATTR_KEY] = chosen;
-              body = JSON.stringify(obj);
-              log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
+              obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen;
+              body = JSON.stringify(obj); log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) {
-          warn("XHR inject skipped due to error:", e);
-        }
+        } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
       };
     }
 
-    // fetch
     if (!S.wiredFetch && window.fetch) {
       S.wiredFetch = true;
       const _fetch = window.fetch;
@@ -507,44 +424,28 @@
         try {
           const url  = typeof input === "string" ? input : (input?.url || "");
           const meth = (init?.method || "GET").toUpperCase();
-          sniffIssueKeyFromURL(url);
-
+          sniffFromURL(url);
           if (S.ktaxa === true) return _fetch(input, init);
-
           if (/POST|PUT/.test(meth) && init?.body && typeof init.body === "string") {
             let obj; try { obj = JSON.parse(init.body); } catch { obj = null; }
             if (looksLikeCreateUpdate(obj)) {
-              const form = getForm();
-              const sel = form && getCustomSelect(form);
+              const form = getForm(); const sel = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
-                obj.attributes = obj.attributes || {};
-                obj.attributes[ATTR_KEY] = chosen;
-                init = { ...init, body: JSON.stringify(obj) };
-                log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
+                obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen;
+                init = { ...init, body: JSON.stringify(obj) }; log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
               }
             }
           }
-        } catch (e) {
-          warn("fetch inject skipped due to error:", e);
-        }
+        } catch (e) { warn("fetch inject skipped:", e); }
         return _fetch(input, init);
       };
     }
   }
 
   /* ---------- Boot ---------- */
-  function boot() {
-    onceStyle();
-    wireNetwork();
-    wireObservers();
-    log("Ready (v5)");
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
-  }
+  function boot(){ onceStyle(); wireNetwork(); wireObservers(); log("Ready (v5.4)"); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
 })();
 </script>
