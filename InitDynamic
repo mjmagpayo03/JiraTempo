@@ -17,9 +17,8 @@
 <!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
 <script type="text/javascript">
 (function(){
-  // Prefer AJS.$, fallback to jQuery/$ if available
   const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
+  if (!$) return;
 
   function removeIssueType(){
     try{
@@ -31,14 +30,12 @@
   function removeUnwantedIssueTypes(){
     try{
       $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
-      $("#issuetype-field")
-        .off(".removeIssueType")
+      $("#issuetype-field").off(".removeIssueType")
         .on("keyup.removeIssueType", removeIssueType)
         .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
       $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
         setTimeout(() => {
-          if (typeof window.findIssueType === "function") { window.findIssueType(); }
-          else { removeIssueType(); }
+          if (typeof window.findIssueType === "function") window.findIssueType(); else removeIssueType();
         }, 1000);
       });
     }catch(e){}
@@ -47,10 +44,10 @@
   function overwriteNewDemandNames(){
     try{
       const url = String(window.location.href);
-      if (url.includes("&demandnew=true")){ removeUnwantedIssueTypes(); }
+      if (url.includes("&demandnew=true")) removeUnwantedIssueTypes();
       if (url.includes("&demandcustomized=true")){
         const hdr = $(".aui-page-header-inner").get(0);
-        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+        if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
         $('label[for="issuetype-field"]').text("Demand Type");
         $('label[for="issue-create-issue-type"]').text("Demand Type");
         $('label[for="project-field"]').parent().hide();
@@ -63,7 +60,7 @@
           const issueType = $typeRow.children().eq(2).text();
           if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
             const hdr = $(".aui-page-header-inner").get(0);
-            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+            if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
             $projRow.hide();
             $('label[for="issue-create-issue-type"]').text("Demand Type");
           }
@@ -75,8 +72,8 @@
   function addCSSRule(sheet, selector, rules, index){
     try{
       if (!sheet) return;
-      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
-      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
+      if ("insertRule" in sheet) sheet.insertRule(`${selector}{${rules}}`, index);
+      else if ("addRule" in sheet) sheet.addRule(selector, rules, index);
     }catch(e){}
   }
 
@@ -114,37 +111,34 @@
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.1 (PROD) ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v6.3 (PROD) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v6.1 (PROD)
-   * - Uses native label "Task" (no "(from API)")
-   * - Parent-only warning (no warning on Sub-task/Change Request)
-   * - Disables dialog button when: no Task selected OR warning shown
-   * - KTAXA group bypass (no custom field, no warning)
-   * - JSONP Task list via ScriptRunner
-   * - Observers re-init after Cancel/close
-   * - Injects Task only on CREATE (POST) to avoid 500s on PUT edits
+   * v6.3 changes:
+   *  - ATTR_KEY switched to "_Task_" (Prod)
+   *  - Sentinel re-applied to keep dialog button disabled when needed
+   *  - All earlier protections kept (parent-only warning, exemptions, POST-only inject, refill-if-empty)
    * ============================================================ */
 
-  /* ---------- Config (adjust if needed) ---------- */
-  const ATTR_KEY        = "Task";                    // PROD label/key
-  const NATIVE_LABEL    = "Task";                    // what the Tempo dialog shows
-  const CUSTOM_LABEL    = "Task";                    // what we render
-  const JSONP_ENDPOINT  = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD        = "customfield_17447";       // Activity Code field id (prod)
-  const KTAXA_GROUP_NAME= "DM-KTAXA";
-
-  // Show warning only for DM-* parent issues not in this exemption set:
-  const EXEMPT_ISSUES   = new Set([
-    // add PROD exemptions here, comma-separated (e.g. "DM-50267")
-  ]);
-
-  // treat these issue types as "not parent" (no warning)
-  const SUBTASK_LIKE_TYPES = new Set(["Sub-task","Change Request"]);
-
+  /* ---------- Config ---------- */
+  const ATTR_KEY         = "_Task_";                // *** PROD key ***
+  const NATIVE_LABEL     = "Task";
+  const CUSTOM_LABEL     = "Task";
+  const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
+  const AC_FIELD         = "customfield_17447";
+  const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
+  const SENTINEL_MS         = 2500;                 // keep strong-disable briefly
+
+  const EXEMPT_ISSUES = new Set([
+    "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
+    "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
+    "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484",
+    "DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399",
+    "DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"
+  ]);
+  const SUBTASK_LIKE_TYPES = new Set(["Sub-task","Change Request"]);
 
   /* ---------- State ---------- */
   const S = {
@@ -161,7 +155,8 @@
     bodyMO: null,
     formMO: null,
     formMOStarted: false,
-    debounceTimer: null
+    debounceTimer: null,
+    sentinel: null
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -187,8 +182,7 @@
   /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
-
-  function getForm() { return document.querySelector("#worklogForm"); }
+  function getForm(){ return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
@@ -249,9 +243,9 @@
   /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
-    // try 'for' first, then text
-    let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
-    if (!lab) lab = [...form.querySelectorAll("label")].find(l => (l.textContent || "").trim().toLowerCase() === NATIVE_LABEL.toLowerCase());
+    let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);  // e.g. for="_Task_"
+    if (!lab) lab = [...form.querySelectorAll("label")]
+      .find(l => (l.textContent || "").trim().toLowerCase() === NATIVE_LABEL.toLowerCase());
     if (!lab) return null;
     return lab.closest(".sc-bKhNmF") || lab.parentElement?.parentElement || lab.parentElement;
   }
@@ -285,9 +279,11 @@
   function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
   function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
   function getSubmitBtn(form){
-    return form?.querySelector('[name="submitWorklogButton"]')
-        || [...(form?.querySelectorAll('button') || [])]
-           .find(b => /^(log time|update)$/i.test((b.textContent || '').trim()));
+    // Strictly search INSIDE the dialog form
+    let b = form?.querySelector('button[name="submitWorklogButton"]');
+    if (b) return b;
+    const buttons = [...(form?.querySelectorAll('button') || [])];
+    return buttons.find(x => /^(log time|update)$/i.test((x.textContent || '').trim())) || null;
   }
 
   function fillSelect(select, options, preselect) {
@@ -308,11 +304,26 @@
   /* ---------- Warning + Disable ---------- */
   function setSubmitBlocked(form, blocked) {
     const btn = getSubmitBtn(form);
-    if (!btn) return;
+    if (!btn) return; // avoid touching page-level menu button
     btn.disabled = !!blocked;
     btn.setAttribute("data-state", blocked ? "not-active" : "active");
     btn.setAttribute("aria-disabled", String(!!blocked));
     btn.classList.toggle("workattr-disabled-btn", !!blocked);
+
+    // short sentinel to fight React remount toggles
+    if (S.sentinel) { clearInterval(S.sentinel); S.sentinel = null; }
+    if (blocked) {
+      const start = Date.now();
+      S.sentinel = setInterval(() => {
+        const f = getForm(); if (!f) return;
+        const b = getSubmitBtn(f); if (!b) return;
+        b.disabled = true;
+        b.setAttribute("data-state", "not-active");
+        b.setAttribute("aria-disabled", "true");
+        b.classList.add("workattr-disabled-btn");
+        if (Date.now() - start > SENTINEL_MS) { clearInterval(S.sentinel); S.sentinel = null; }
+      }, 120);
+    }
   }
 
   /* ---------- Data ---------- */
@@ -355,10 +366,7 @@
         const j = await r.json();
         const v = j?.fields?.[AC_FIELD];
         return !!(v && String(v).trim().length > 0);
-      } catch {
-        // fail-open to avoid blocking on transient errors
-        return true;
-      }
+      } catch { return true; }
     })();
     S.acCache.set(issueKey, ok);
     return ok;
@@ -382,11 +390,10 @@
     return val;
   }
 
-  /* ---------- Gate (warning + disable) ---------- */
+  /* ---------- Gate ---------- */
   async function applyGate(form) {
     if (!form) return;
 
-    // KTAXA: show native Task, no warning, no disable
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
@@ -400,14 +407,14 @@
     const hasTask  = !!(select && select.value);
 
     let showWarn = false;
-    if (key && isDM(key) && !EXEMPT_ISSUES.has(key)) {
-      const [parent, ac] = await Promise.all([isParentIssue(key), hasActivityCode(key)]);
-      showWarn = parent && !ac;
+    if (key && isDM(key)) {
+      if (!EXEMPT_ISSUES.has(key)) {
+        const [parent, ac] = await Promise.all([isParentIssue(key), hasActivityCode(key)]);
+        showWarn = parent && !ac;
+      }
     }
 
     if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
-
-    // disable only inside the dialog form
     setSubmitBlocked(form, showWarn || !hasTask);
   }
 
@@ -423,7 +430,6 @@
 
       if (S.lastIssueKey !== issueKey) {
         S.lastIssueKey = issueKey;
-        // keep previous selection only within the same issue
         S.selection = "";
       }
 
@@ -435,11 +441,12 @@
       }
 
       onceStyle();
-      const host = ensureCustomHost(form);
+      const host   = ensureCustomHost(form);
       if (!host) return;
 
       const select = getCustomSelect(form);
-      if (S.lastOptionsKey !== issueKey) {
+      const needRefill = !select || select.options.length <= 1;
+      if (needRefill || S.lastOptionsKey !== issueKey) {
         const options = await fetchOptionsFor(issueKey).catch(() => []);
         S.lastOptionsKey = issueKey;
         fillSelect(select, options, S.selection);
@@ -450,17 +457,6 @@
         select.addEventListener("change", () => {
           S.selection = select.value || "";
           applyGate(form);
-        });
-      }
-
-      // re-evaluate on Cancel (dialog remounts)
-      const cancelBtn = [...(form.querySelectorAll('button')||[])]
-        .find(b => /cancel/i.test((b.textContent||"").trim()));
-      if (cancelBtn && !cancelBtn.__workattrBound){
-        cancelBtn.__workattrBound = true;
-        cancelBtn.addEventListener("click", () => {
-          // next open will rebuild cleanly
-          setTimeout(loadForCurrentForm, 200);
         });
       }
 
@@ -489,11 +485,9 @@
   }
 
   /* ---------- Injection guards ---------- */
-  function looksLikeCreate(bodyObj) {
+  function looksLikeTempoCreate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
-    // create payload usually contains 'started' + 'timeSpentSeconds' and NOT originId
-    if ("started" in bodyObj && "timeSpentSeconds" in bodyObj && !("originId" in bodyObj)) return true;
-    return false;
+    return ("started" in bodyObj && "timeSpentSeconds" in bodyObj);
   }
 
   /* ---------- Network wiring ---------- */
@@ -515,25 +509,22 @@
         try {
           if (S.ktaxa === true) return _send.call(this, body);
           const isPOST = (this.__method || "") === "POST";
-          // Only inject on CREATE (POST) to avoid 500s on PUT edits
           if (!isPOST || !body || typeof body !== "string") {
             return _send.call(this, body);
           }
           let obj; try { obj = JSON.parse(body); } catch { obj = null; }
-          if (looksLikeCreate(obj)) {
+          if (looksLikeTempoCreate(obj)) {
             const form = getForm();
             const sel = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
               obj.attributes = obj.attributes || {};
-              obj.attributes[ATTR_KEY] = chosen;
+              obj.attributes[ATTR_KEY] = chosen;       // *** _Task_ ***
               body = JSON.stringify(obj);
-              log("✅ Injected into XHR (create)", { [ATTR_KEY]: chosen });
+              log("✅ Injected into XHR (POST)", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) {
-          warn("XHR inject skipped due to error:", e);
-        }
+        } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
       };
     }
@@ -550,24 +541,21 @@
 
           if (S.ktaxa === true) return _fetch(input, init);
 
-          // Only inject on CREATE (POST)
           if (meth === "POST" && init?.body && typeof init.body === "string") {
             let obj; try { obj = JSON.parse(init.body); } catch { obj = null; }
-            if (looksLikeCreate(obj)) {
+            if (looksLikeTempoCreate(obj)) {
               const form = getForm();
               const sel = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
                 obj.attributes = obj.attributes || {};
-                obj.attributes[ATTR_KEY] = chosen;
+                obj.attributes[ATTR_KEY] = chosen;     // *** _Task_ ***
                 init = { ...init, body: JSON.stringify(obj) };
-                log("✅ Injected into fetch (create)", { [ATTR_KEY]: chosen });
+                log("✅ Injected into fetch (POST)", { [ATTR_KEY]: chosen });
               }
             }
           }
-        } catch (e) {
-          warn("fetch inject skipped due to error:", e);
-        }
+        } catch (e) { warn("fetch inject skipped:", e); }
         return _fetch(input, init);
       };
     }
@@ -578,7 +566,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.1)");
+    log("Ready (v6.3 PROD)");
   }
 
   if (document.readyState === "loading") {
