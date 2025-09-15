@@ -205,25 +205,43 @@
     return null;
   }
 
-  function hideNativeTaskRows(form){
-    const host=form.querySelector('#custom-workattr-host');
-    const select=form.querySelector('#custom-workattr-select');
-    if(!host || !select) return;
+function hideNativeTaskRows(form){
+  const host = form.querySelector('#custom-workattr-host');
+  if (!host) return;
 
-    const rows=new Set();
-    for(const lab of form.querySelectorAll('label')){
-      const txt=(lab.textContent||'').trim().toLowerCase();
-      if(txt===NATIVE_LABEL.toLowerCase() && !lab.closest('#custom-workattr-host')){
-        const r=fieldRow(form,lab); if(r) rows.add(r);
-      }
-    }
-    const q=[`#${CSS.escape(ATTR_KEY)}`,`[name="${ATTR_KEY}"]`,`[aria-label="${NATIVE_LABEL}"]`].join(',');
-    for(const ctrl of form.querySelectorAll(q)){
-      if(ctrl.closest('#custom-workattr-host')) continue;
-      const r=fieldRow(form,ctrl); if(r) rows.add(r);
-    }
-    rows.forEach(r=>r.classList.add('workattr-hide-native'));
-  }
+  // “Row” = the immediate container that Tempo uses for a field group.
+  const ROW_SEL = '[role="group"], .aui-field, .sc-bKhNmF';
+  const hostRow = host.closest(ROW_SEL) || host;
+
+  const rows = new Set();
+
+  // 1) Any label that says "Task" (not inside our host)
+  form.querySelectorAll('label').forEach(lab => {
+    const txt = (lab.textContent || '').trim().toLowerCase();
+    if (txt !== NATIVE_LABEL.toLowerCase()) return;
+    if (lab.closest('#custom-workattr-host')) return;
+    const r = lab.closest(ROW_SEL) || lab.parentElement;
+    if (r && r !== hostRow) rows.add(r);
+  });
+
+  // 2) Any native control that might render the Task field (list/grid views)
+  const ctrlSel = [
+    `[id="${ATTR_KEY}"]`,
+    `[name="${ATTR_KEY}"]`,
+    `[aria-label="${NATIVE_LABEL}"]`,
+    '[data-test-id*="work-attribute"] select',
+    '[data-test-id*="work-attribute"] [role="combobox"]'
+  ].join(',');
+
+  form.querySelectorAll(ctrlSel).forEach(ctrl => {
+    if (ctrl.closest('#custom-workattr-host')) return;
+    const r = ctrl.closest(ROW_SEL) || ctrl.parentElement;
+    if (r && r !== hostRow) rows.add(r);
+  });
+
+  rows.forEach(r => r.classList.add('workattr-hide-native'));
+}
+
 
   function ensureCustomHost(form){
     if(!form) return null;
@@ -235,6 +253,17 @@
       const txt=(lab.textContent||'').trim().toLowerCase();
       if(txt===NATIVE_LABEL.toLowerCase()){ insertAfter=fieldRow(form,lab); if(insertAfter) break; }
     }
+// after: insert host (same as your current code)
+if (insertAfter?.parentElement) {
+  insertAfter.parentElement.insertBefore(host, insertAfter.nextSibling);
+} else {
+  form.appendChild(host);
+}
+
+/* NEW: aggressively hide the native row in list view */
+hideNativeTaskRows(form);
+setTimeout(() => hideNativeTaskRows(form), 0);
+setTimeout(() => hideNativeTaskRows(form), 250);
 
     host=document.createElement("div");
     host.id="custom-workattr-host";
