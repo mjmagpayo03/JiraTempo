@@ -72,7 +72,7 @@
         if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
           const $typeRow = $('label[for="issue-create-issue-type"]').parent();
           const issueType = $typeRow.children().eq(2).text();
-          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
+          if (issueType === "Service Delivery Demand" || "Solution Delivery Demand"){
             const hdr = $(".aui-page-header-inner").get(0);
             if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
             $projRow.hide();
@@ -126,26 +126,25 @@
 })();
 </script>
 
-<!-- ===================== 2) Tempo Work Attribute Helper — v6.8 (with key auto-detect) ===================== -->
+<!-- ===================== 2) Tempo Work Attribute Helper — v6.9 ===================== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — v6.8
-   * - Create + Edit (Grid/List) robust
+   * Tempo Work Attribute Helper — v6.9
+   * - Robust on Create + Edit (Grid/List)
    * - issueKey resolution: DOM → hidden issueKey → hidden issueId (Jira)
-   *   → worklogId/originId (Tempo GET body; tries with/without trailing '/')
-   * - Hard submit blocking + disable re-enforcement
+   *   → worklogId/originId (Tempo GET body; tries with/without '/')
    * - JSONP Task dropdown; hides native Task row
-   * - Warns for missing Activity Code on parent DM issues
-   * - Injects Task attribute using server’s exact key name
+   * - Warning + hard submit block (capture) + disable re-enforcement
+   * - Injects Task using server’s exact KEY **and** SHAPE (map or array)
    * ============================================================ */
 
   /* ---------- Config ---------- */
-  const ATTR_KEY         = "_Task_";             // for locating the native row (not used for injection)
+  const ATTR_KEY         = "_Task_";             // used only to find the native row
   const NATIVE_LABEL     = "Task";
   const CUSTOM_LABEL     = "Task";
   const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD         = "customfield_17447";  // Activity Code field
+  const AC_FIELD         = "customfield_17447";  // Activity Code
   const EXEMPT_ISSUES    = new Set(["DM-50267","DM-50238"]);
   const EXEMPT_TYPES     = new Set(["Sub-task","Sub-task (technical)","Change Request"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
@@ -169,7 +168,8 @@
     debounceTimer: null,
     worklogKeyCache: new Map(),   // worklogId -> issueKey
     lastWorklogId: null,
-    lastBlock: false
+    lastBlock: false,
+    attrShape: 0
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -238,25 +238,61 @@
     return m ? m[0].toUpperCase() : null;
   }
 
-  /* ---------- Attribute key auto-detect (avoids 500 on PUT) ---------- */
-  const ATTR_KEY_FALLBACK   = "_Task_";
+  /* ---------- Attribute key + shape autodetect ---------- */
+  const ATTR_KEY_FALLBACK   = "Task";                // <— fallback key
   const ATTR_KEY_CANDIDATES = ["Task","_Task_","_Picker_"];
+
+  function normalizeName(s){ return String(s||"").toLowerCase().replace(/[^a-z]/g,""); }
+
   function pickAttrKey(attrs){
-    if (attrs && typeof attrs === "object"){
-      const k1 = Object.keys(attrs).find(k => k.toLowerCase().replace(/[^a-z]/g,'') === "task");
+    if (attrs && typeof attrs === "object") {
+      const k1 = Object.keys(attrs).find(k => normalizeName(k) === "task");
       if (k1) return k1;
-      for (const cand of ATTR_KEY_CANDIDATES){ if (cand in attrs) return cand; }
+      for (const cand of ATTR_KEY_CANDIDATES) if (cand in attrs) return cand;
     }
     return ATTR_KEY_FALLBACK;
   }
-  function setWorkAttr(attrs, value){
+  function setWorkAttrMap(attrs, value){
     const key = pickAttrKey(attrs);
-    // remove other synonyms so we never send duplicates
     const synonyms = new Set([...ATTR_KEY_CANDIDATES, ATTR_KEY_FALLBACK]);
     synonyms.delete(key);
     for (const s of synonyms) delete attrs[s];
     attrs[key] = value;
     console.log("%c[WorkAttr]", "color:#2aa", "using key", key, "→", value);
+  }
+
+  const ATTR_SHAPES = { UNKNOWN:0, MAP:1, ARRAY:2 };
+  function pickAttrKeyFromArray(arr){
+    if (!Array.isArray(arr)) return null;
+    const f = arr.find(it => normalizeName(it?.key) === "task" || normalizeName(it?.name) === "task");
+    return (f && (f.key || f.name)) || null;
+  }
+  function ensureWorkAttrShape(obj, chosen){
+    if (!obj) return;
+    // if we know the server likes array, or payload already is array → use array
+    if (Array.isArray(obj.attributes) || S.attrShape === ATTR_SHAPES.ARRAY){
+      const arr = Array.isArray(obj.attributes) ? obj.attributes.slice() : [];
+      const existingKey = pickAttrKeyFromArray(arr) || ATTR_KEY_FALLBACK;
+      const keepKeys = new Set([existingKey, ...ATTR_KEY_CANDIDATES]);
+
+      let placed = false;
+      const out = [];
+      for (const it of arr){
+        const k = it?.key || it?.name;
+        if (keepKeys.has(k) || normalizeName(k) === "task"){
+          if (!placed){ out.push({ key: existingKey, value: chosen }); placed = true; }
+          // drop synonyms
+        } else {
+          out.push(it);
+        }
+      }
+      if (!placed) out.push({ key: existingKey, value: chosen });
+      obj.attributes = out;
+    } else {
+      // default: MAP
+      obj.attributes = obj.attributes || {};
+      setWorkAttrMap(obj.attributes, chosen);
+    }
   }
 
   /* ---------- Hidden helpers & resolvers ---------- */
@@ -287,14 +323,14 @@
   }
 
   async function resolveIssueKey(form){
-    const domKey    = extractIssueKeyFromDOM(form);      if (domKey)    return setResolved(domKey,   "DOM");
+    const domKey    = extractIssueKeyFromDOM(form); if (domKey) return setResolved(domKey,"DOM");
     const hiddenKey = getHidden(form,["issueKey","issue-key"]); if (hiddenKey) return setResolved(hiddenKey,"hidden:issueKey");
 
     const issueId = getHidden(form,["issueId","issue-id"]);
     if (issueId){
       try{
         const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueId)}?fields=key`);
-        if (rx.ok){ const jj=await rx.json(); const k = jj?.key || jj?.fields?.key; if (k) return setResolved(k,"Jira:issueId"); }
+        if (rx.ok){ const jj=await rx.json(); const k=jj?.key || jj?.fields?.key; if (k) return setResolved(k,"Jira:issueId"); }
       }catch(e){}
     }
 
@@ -307,6 +343,12 @@
       if (j){
         let k   = j?.issue?.key || j?.issueKey || null;
         let iid = j?.issue?.id  || j?.issueId  || null;
+
+        // learn attribute SHAPE from GET body
+        const at = j?.attributes;
+        if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
+        else if (at && typeof at === "object") { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
+
         if (!k && iid){
           const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`);
           if (rx.ok){ const jj=await rx.json(); k = jj?.key || jj?.fields?.key || null; }
@@ -413,7 +455,7 @@
   const getWarnBox     = (form) => form?.querySelector("#custom-workattr-warning") || null;
 
   function getSubmitBtn(form) {
-    const prioritySelectors = [
+    const sels = [
       'button[name="submitWorklogButton"]',
       'button[type="submit"]',
       'button[id*="submit"][id*="worklog"]',
@@ -422,15 +464,12 @@
       'button[data-test-id*="log"]',
       'button[data-testid*="log"]'
     ];
-    for (const sel of prioritySelectors){
-      const b = form.querySelector(sel);
-      if (b) return b;
-    }
-    const byText = [...(form.querySelectorAll('button, [role="button"]') || [])]
-      .find(b => /log time|update/i.test((b.textContent || '').trim()));
+    for (const s of sels){ const b=form.querySelector(s); if (b) return b; }
+    const byText = [...(form.querySelectorAll('button, [role="button"]')||[])]
+      .find(b=>/log time|update/i.test((b.textContent||'').trim()));
     if (byText) return byText;
-    return [...(form.querySelectorAll('button') || [])]
-      .reverse().find(b => /primary|aui-button-primary/i.test(b.className)) || null;
+    return [...(form.querySelectorAll('button')||[])].reverse()
+      .find(b=>/primary|aui-button-primary/i.test(b.className)) || null;
   }
 
   /* ---------- Data & options ---------- */
@@ -479,11 +518,8 @@
     btn.disabled = !!block;
     btn.setAttribute("aria-disabled", String(!!block));
     btn.classList.toggle("workattr-disabled-btn", !!block);
-    setTimeout(() => {
-      btn.disabled = !!block;
-      btn.setAttribute("aria-disabled", String(!!block));
-      btn.classList.toggle("workattr-disabled-btn", !!block);
-    }, 80);
+    setTimeout(()=>{ btn.disabled=!!block; btn.setAttribute("aria-disabled", String(!!block));
+      btn.classList.toggle("workattr-disabled-btn", !!block); }, 80);
 
     if (!btn.__workattrGuarded){
       btn.__workattrGuarded = true;
@@ -630,7 +666,7 @@
 
       XMLHttpRequest.prototype.send = function(body) {
         try{
-          // Hook XHR response to capture key from GET worklog body
+          // Hook XHR response to capture key & attribute shape from GET body
           if (!this.__workattrHooked){
             this.__workattrHooked = true;
             const orig = this.onreadystatechange;
@@ -644,6 +680,11 @@
                     const wlId = (j?.id || j?.worklogId);
                     const key  = j?.issue?.key || j?.issueKey;
                     const iid  = j?.issue?.id  || j?.issueId;
+
+                    const at = j?.attributes;
+                    if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
+                    else if (at && typeof at==='object') { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
+
                     if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"XHR:worklogBody"); }
                     else if (iid){
                       fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
@@ -658,6 +699,7 @@
           }
 
           if (S.ktaxa === true) return _send.call(this, body);
+
           const isMut = /POST|PUT/.test(this.__method || "");
           if (!isMut || !body || typeof body !== "string") {
             return _send.call(this, body);
@@ -668,8 +710,9 @@
             const sel  = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
-              obj.attributes = obj.attributes || {};
-              setWorkAttr(obj.attributes, chosen);
+              // some nodes 500 on explicit nulls
+              if ("endDate" in obj && obj.endDate == null) delete obj.endDate;
+              ensureWorkAttrShape(obj, chosen);
               body = JSON.stringify(obj);
               log("✅ Injected into XHR");
             }
@@ -689,7 +732,7 @@
           const meth = (init?.method || "GET").toUpperCase();
           sniffIssueKeyFromURL(url);
 
-          // Capture GET worklog body (learn key)
+          // Capture GET worklog body (learn key + attribute shape)
           if (/^GET$/i.test(meth) && /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+\/?$/i.test(url)){
             const res = await _fetch(input, init);
             try{
@@ -698,6 +741,11 @@
                 const wlId = (j?.id || j?.worklogId);
                 const key  = j?.issue?.key || j?.issueKey;
                 const iid  = j?.issue?.id  || j?.issueId;
+
+                const at = j?.attributes;
+                if (Array.isArray(at)) { S.attrShape = ATTR_SHAPES.ARRAY;  log("attributes shape: ARRAY"); }
+                else if (at && typeof at==='object') { S.attrShape = ATTR_SHAPES.MAP; log("attributes shape: MAP"); }
+
                 if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"fetch:worklogBody"); }
                 else if (iid){
                   fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
@@ -718,8 +766,8 @@
               const sel  = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
-                obj.attributes = obj.attributes || {};
-                setWorkAttr(obj.attributes, chosen);
+                if ("endDate" in obj && obj.endDate == null) delete obj.endDate;
+                ensureWorkAttrShape(obj, chosen);
                 init = { ...init, body: JSON.stringify(obj) };
                 log("✅ Injected into fetch");
               }
@@ -755,7 +803,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.8)");
+    log("Ready (v6.9)");
   }
 
   if (document.readyState === "loading") {
