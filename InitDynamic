@@ -111,14 +111,16 @@
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.3 (PROD) ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v6.4 (PROD) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * v6.3 changes:
-   *  - ATTR_KEY switched to "_Task_" (Prod)
-   *  - Sentinel re-applied to keep dialog button disabled when needed
-   *  - All earlier protections kept (parent-only warning, exemptions, POST-only inject, refill-if-empty)
+   * v6.4 highlights:
+   *  - Dialog button stays disabled while WARNING is visible (continuous sentinel)
+   *  - Never touches the page-level "Log Time" menu button
+   *  - _Task_ key (PROD), parent-only warning, exemptions
+   *  - POST-only injection; edit (PUT) never altered
+   *  - Refill options after save/cancel if needed
    * ============================================================ */
 
   /* ---------- Config ---------- */
@@ -129,7 +131,6 @@
   const AC_FIELD         = "customfield_17447";
   const KTAXA_GROUP_NAME = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
-  const SENTINEL_MS         = 2500;                 // keep strong-disable briefly
 
   const EXEMPT_ISSUES = new Set([
     "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
@@ -156,6 +157,7 @@
     formMO: null,
     formMOStarted: false,
     debounceTimer: null,
+    blocked: false,
     sentinel: null
   };
 
@@ -279,7 +281,6 @@
   function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
   function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
   function getSubmitBtn(form){
-    // Strictly search INSIDE the dialog form
     let b = form?.querySelector('button[name="submitWorklogButton"]');
     if (b) return b;
     const buttons = [...(form?.querySelectorAll('button') || [])];
@@ -301,28 +302,37 @@
     if (preselect && keep.has(preselect)) select.value = preselect;
   }
 
-  /* ---------- Warning + Disable ---------- */
+  /* ---------- Warning + Disable (with watchdog) ---------- */
   function setSubmitBlocked(form, blocked) {
     const btn = getSubmitBtn(form);
-    if (!btn) return; // avoid touching page-level menu button
-    btn.disabled = !!blocked;
-    btn.setAttribute("data-state", blocked ? "not-active" : "active");
-    btn.setAttribute("aria-disabled", String(!!blocked));
-    btn.classList.toggle("workattr-disabled-btn", !!blocked);
+    S.blocked = !!blocked;
 
-    // short sentinel to fight React remount toggles
-    if (S.sentinel) { clearInterval(S.sentinel); S.sentinel = null; }
-    if (blocked) {
-      const start = Date.now();
-      S.sentinel = setInterval(() => {
-        const f = getForm(); if (!f) return;
-        const b = getSubmitBtn(f); if (!b) return;
-        b.disabled = true;
-        b.setAttribute("data-state", "not-active");
-        b.setAttribute("aria-disabled", "true");
-        b.classList.add("workattr-disabled-btn");
-        if (Date.now() - start > SENTINEL_MS) { clearInterval(S.sentinel); S.sentinel = null; }
-      }, 120);
+    if (btn) {
+      btn.disabled = S.blocked;
+      btn.setAttribute("data-state", S.blocked ? "not-active" : "active");
+      btn.setAttribute("aria-disabled", String(S.blocked));
+      btn.classList.toggle("workattr-disabled-btn", S.blocked);
+    }
+
+    // Watchdog: keep button disabled while blocked is true
+    if (S.blocked) {
+      if (!S.sentinel) {
+        S.sentinel = setInterval(() => {
+          const f = getForm();
+          if (!f) { clearInterval(S.sentinel); S.sentinel = null; return; }
+          if (!S.blocked) { clearInterval(S.sentinel); S.sentinel = null; return; }
+          const b = getSubmitBtn(f);
+          if (b) {
+            b.disabled = true;
+            b.setAttribute("data-state", "not-active");
+            b.setAttribute("aria-disabled", "true");
+            b.classList.add("workattr-disabled-btn");
+          }
+        }, 200);
+      }
+    } else if (S.sentinel) {
+      clearInterval(S.sentinel);
+      S.sentinel = null;
     }
   }
 
@@ -398,6 +408,7 @@
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
       form.querySelector("#custom-workattr-host")?.remove();
+      S.blocked = false;
       return;
     }
 
@@ -413,8 +424,9 @@
         showWarn = parent && !ac;
       }
     }
-
     if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
+
+    // Disable when warning is shown OR no task chosen
     setSubmitBlocked(form, showWarn || !hasTask);
   }
 
@@ -437,6 +449,7 @@
         const row = findNativeTaskRow(form);
         if (row) row.classList.remove("workattr-hide-native");
         form.querySelector("#custom-workattr-host")?.remove();
+        S.blocked = false;
         return;
       }
 
@@ -519,7 +532,7 @@
             const chosen = (sel && sel.value) || S.selection || "";
             if (chosen) {
               obj.attributes = obj.attributes || {};
-              obj.attributes[ATTR_KEY] = chosen;       // *** _Task_ ***
+              obj.attributes[ATTR_KEY] = chosen;   // *** _Task_ ***
               body = JSON.stringify(obj);
               log("✅ Injected into XHR (POST)", { [ATTR_KEY]: chosen });
             }
@@ -549,7 +562,7 @@
               const chosen = (sel && sel.value) || S.selection || "";
               if (chosen) {
                 obj.attributes = obj.attributes || {};
-                obj.attributes[ATTR_KEY] = chosen;     // *** _Task_ ***
+                obj.attributes[ATTR_KEY] = chosen; // *** _Task_ ***
                 init = { ...init, body: JSON.stringify(obj) };
                 log("✅ Injected into fetch (POST)", { [ATTR_KEY]: chosen });
               }
@@ -566,7 +579,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.3 PROD)");
+    log("Ready (v6.4 PROD)");
   }
 
   if (document.readyState === "loading") {
