@@ -69,7 +69,7 @@
       } else if (url.includes("CreateIssue.jspa")){
         const $projRow = $('label[for="issue-create-project-name"]').parent();
         const projectName = $projRow.children().eq(1).text();
-        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
+        if (projectName === "Demand Management" || "Demand Management UAT"){
           const $typeRow = $('label[for="issue-create-issue-type"]').parent();
           const issueType = $typeRow.children().eq(2).text();
           if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
@@ -126,17 +126,16 @@
 })();
 </script>
 
-<!-- ===================== 2) Tempo Work Attribute Helper — v7.0 ===================== -->
+<!-- ===================== 2) Tempo Work Attribute Helper — v7.1 ===================== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — v7.0
-   * - Works in Create + Edit (Grid/List)
-   * - Robust issueKey resolution: DOM → hidden inputs → Jira issueId → Tempo worklog GET
-   * - Hides native Task row; provides custom Task dropdown (JSONP via ScriptRunner endpoint)
-   * - Shows AC warning on parent DM issues lacking Activity Code; disables submit (hard block)
-   * - Injects Task attribute into request bodies using DC map-of-objects:
-   *     "attributes": { "Task": { "key": "Task", "value": "<choice>" } }
+   * Tempo Work Attribute Helper — v7.1
+   * - Create + Edit (Grid/List)
+   * - JSONP Task dropdown (ScriptRunner endpoint)
+   * - AC warning (parent DM issues missing Activity Code) + hard submit block
+   * - Injects Task using DC map-of-objects AND auto-discovers the canonical key
+   *   by calling /rest/tempo-timesheets/4/work-attributes (e.g. "_Task_" vs "Task").
    * ============================================================ */
 
   /* ---------- Config ---------- */
@@ -168,7 +167,9 @@
     debounceTimer: null,
     worklogKeyCache: new Map(),   // worklogId -> issueKey
     lastWorklogId: null,
-    lastBlock: false
+    lastBlock: false,
+    attrKey: null,                // ← canonical Tempo key for “Task”
+    attrKeyLoaded: false
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
@@ -195,7 +196,58 @@
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
   const getForm = () => document.querySelector("#worklogForm");
+  const normalizeName = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
 
+  /* ---------- Canonical Tempo key discovery ---------- */
+  async function loadTempoAttrKey(){
+    if (S.attrKeyLoaded) return S.attrKey;
+    S.attrKeyLoaded = true;
+    try{
+      const r = await fetch("/rest/tempo-timesheets/4/work-attributes");
+      if (r.ok){
+        const list = await r.json();
+        const m = (Array.isArray(list) ? list : []).find(it =>
+          normalizeName(it?.name) === "task" || normalizeName(it?.key) === "task"
+        );
+        if (m?.key){ S.attrKey = String(m.key); log("Tempo canonical key:", S.attrKey); return S.attrKey; }
+      }
+    }catch(e){}
+    // Fallbacks — many DC installs use _Task_ as the actual key
+    S.attrKey = "_Task_";
+    log("Tempo canonical key fallback:", S.attrKey);
+    return S.attrKey;
+  }
+
+  /* ---------- Attribute injection (DC map-of-objects) ---------- */
+  function pickAttrKeyFromMap(attrs){
+    if (attrs && typeof attrs === "object" && !Array.isArray(attrs)){
+      const keys = Object.keys(attrs);
+      const k1 = keys.find(k => normalizeName(k)==="task");
+      if (k1) return k1;
+      const k2 = keys.find(k => /^_?task_?$/i.test(k));
+      if (k2) return k2;
+    }
+    return null;
+  }
+
+  // Ensure: "attributes": { "<Key>": { key:"<Key>", value:"<choice>" } }
+  async function ensureTempoAttributes(obj, chosen){
+    if (!obj) return;
+    let attrs = obj.attributes;
+    if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) attrs = {};
+
+    // Prefer a key already present; else the canonical server key; else fallback
+    let key = pickAttrKeyFromMap(attrs) || S.attrKey || await loadTempoAttrKey();
+
+    // remove other Task-like keys so only one remains
+    Object.keys(attrs).forEach(k => { if (normalizeName(k)==="task" && k!==key) delete attrs[k]; });
+
+    attrs[key] = { key, value: chosen };
+    obj.attributes = attrs;
+    log("injecting", { [key]: attrs[key] });
+  }
+
+  /* ---------- KTAXA bypass ---------- */
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
     try {
@@ -208,6 +260,7 @@
     return S.ktaxa;
   }
 
+  /* ---------- Issue key resolution ---------- */
   function extractIssueKeyFromDOM(form) {
     if (!form) return null;
     for (const a of form.querySelectorAll('a[href*="/browse/"]')) {
@@ -237,38 +290,6 @@
     return m ? m[0].toUpperCase() : null;
   }
 
-  /* ---------- Attribute helpers (DC map-of-objects) ---------- */
-  const ATTR_KEY_FALLBACK   = "Task";
-  const ATTR_KEY_CANDIDATES = ["Task","_Task_","_Picker_"];
-  const normalizeName = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
-
-  function pickAttrKey(attrs){
-    if (attrs && typeof attrs === "object" && !Array.isArray(attrs)) {
-      const keys = Object.keys(attrs);
-      const k1 = keys.find(k => normalizeName(k) === "task");
-      if (k1) return k1;
-      for (const cand of ATTR_KEY_CANDIDATES) if (cand in attrs) return cand;
-    }
-    return ATTR_KEY_FALLBACK;
-  }
-
-  // Ensure: "attributes": { "Task": { key:"Task", value:"<choice>" } }
-  function ensureTempoAttributes(obj, chosen){
-    if (!obj) return;
-    let attrs = obj.attributes;
-    if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) attrs = {};
-
-    const key = pickAttrKey(attrs);
-    Object.keys(attrs).forEach(k => {
-      if (normalizeName(k) === "task" && k !== key) delete attrs[k];
-    });
-
-    attrs[key] = { key, value: chosen };
-    obj.attributes = attrs;
-    console.log("%c[WorkAttr]", "color:#2aa", "injecting", { [key]: attrs[key] });
-  }
-
-  /* ---------- Tempo/Jira helpers ---------- */
   function getHidden(form, names){
     for (const n of names){
       const el = form?.querySelector?.(`input[name="${n}"], [id="${n}"]`);
@@ -559,6 +580,8 @@
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer = setTimeout(async () => {
+      await loadTempoAttrKey();  // ← learn the canonical key asap
+
       const issueKey = (await resolveIssueKey(form)) || S.lastSeenIssueKey;
       if (!issueKey) { warn("issueKey not found"); return; }
 
@@ -633,33 +656,6 @@
 
       XMLHttpRequest.prototype.send = function(body) {
         try{
-          // Hook XHR GET /worklogs/{id} to learn issueKey
-          if (!this.__workattrHooked){
-            this.__workattrHooked = true;
-            const orig = this.onreadystatechange;
-            this.onreadystatechange = function(){
-              try{
-                if (this.readyState===4 && /^GET$/i.test(this.__method||"") &&
-                    /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+\/?$/i.test(this.__url||"") &&
-                    this.status>=200 && this.status<300 && this.responseText){
-                  try{
-                    const j = JSON.parse(this.responseText);
-                    const wlId = (j?.id || j?.worklogId);
-                    const key  = j?.issue?.key || j?.issueKey;
-                    const iid  = j?.issue?.id  || j?.issueId;
-                    if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"XHR:worklogBody"); }
-                    else if (iid){
-                      fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
-                        const k=jj?.key || jj?.fields?.key; if (k){ S.worklogKeyCache.set(String(wlId||""), k); setResolved(k,"XHR:worklog→issueId"); }
-                      }).catch(()=>{});
-                    }
-                  }catch(e){}
-                }
-              }catch(e){}
-              if (typeof orig === "function") return orig.apply(this, arguments);
-            };
-          }
-
           if (S.ktaxa === true) return _send.call(this, body);
 
           const isMut = /POST|PUT/.test(this.__method || "");
@@ -692,26 +688,6 @@
           const url  = typeof input === "string" ? input : (input?.url || "");
           const meth = (init?.method || "GET").toUpperCase();
           sniffIssueKeyFromURL(url);
-
-          // Learn issueKey from GET worklog body
-          if (/^GET$/i.test(meth) && /\/rest\/tempo-timesheets\/\d+\/worklogs\/\d+\/?$/i.test(url)){
-            const res = await _fetch(input, init);
-            try{
-              const clone = res.clone();
-              clone.json().then(j=>{
-                const wlId = (j?.id || j?.worklogId);
-                const key  = j?.issue?.key || j?.issueKey;
-                const iid  = j?.issue?.id  || j?.issueId;
-                if (key){ S.worklogKeyCache.set(String(wlId||""), key); setResolved(key,"fetch:worklogBody"); }
-                else if (iid){
-                  fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`).then(r=>r.ok?r.json():null).then(jj=>{
-                    const k=jj?.key || jj?.fields?.key; if (k){ S.worklogKeyCache.set(String(wlId||""), k); setResolved(k,"fetch:worklog→issueId"); }
-                  }).catch(()=>{});
-                }
-              }).catch(()=>{});
-            }catch(e){}
-            return res;
-          }
 
           if (S.ktaxa === true) return _fetch(input, init);
 
@@ -759,7 +735,8 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v7.0)");
+    loadTempoAttrKey();  // fire in the background so we know the key early
+    log("Ready (v7.1)");
   }
 
   if (document.readyState === "loading") {
