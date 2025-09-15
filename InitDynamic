@@ -1,17 +1,142 @@
-<!-- ===== Tempo Work Attribute Helper — Core v5.8 (PROD) ===== -->
+<!-- ========================= BANNER (unchanged) ========================= -->
+<font color="#00008f">
+<b>
+<ul>
+     <!--<li>Confluence Application will have a quick maintenance schedule:  <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font> Please save all work 30 Minutes before the change window to avoid any loss of data.</li>-->
+    <!--<li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li>-->
+    <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
+    <!--    <li>Tempo Charging for August - December 2024: <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a> </li> -->
+</ul>
+</b>
+</font>
+
+<style>
+#announcement-banner { background-color:#9fd9b4; }
+</style>
+
+<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
+<script type="text/javascript">
+(function(){
+  // Prefer AJS.$, fallback to jQuery/$ if available
+  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
+  if (!$) { return; } // quietly exit if no jQuery/AJS in this context
+
+  function removeIssueType(){
+    try{
+      const HIDE = new Set([
+        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
+        "Epic","Story","Task","Bug"
+      ]);
+      $(".aui-list-item-link").filter(function(){
+        return HIDE.has($(this).text().trim());
+      }).parent().hide();
+    }catch(e){}
+  }
+
+  function removeUnwantedIssueTypes(){
+    try{
+      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
+      $("#issuetype-field")
+        .off(".removeIssueType")
+        .on("keyup.removeIssueType", removeIssueType)
+        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
+      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
+        setTimeout(() => {
+          if (typeof window.findIssueType === "function") { window.findIssueType(); }
+          else { removeIssueType(); }
+        }, 1000);
+      });
+    }catch(e){}
+  }
+
+  function overwriteNewDemandNames(){
+    try{
+      const url = String(window.location.href);
+      if (url.includes("&demandnew=true")){
+        removeUnwantedIssueTypes();
+      }
+      if (url.includes("&demandcustomized=true")){
+        const hdr = $(".aui-page-header-inner").get(0);
+        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+        $('label[for="issuetype-field"]').text("Demand Type");
+        $('label[for="issue-create-issue-type"]').text("Demand Type");
+        $('label[for="project-field"]').parent().hide();
+        $('label[for="issue-create-project-name"]').parent().hide();
+      } else if (url.includes("CreateIssue.jspa")){
+        const $projRow = $('label[for="issue-create-project-name"]').parent();
+        const projectName = $projRow.children().eq(1).text();
+        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
+          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
+          const issueType = $typeRow.children().eq(2).text();
+          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
+            const hdr = $(".aui-page-header-inner").get(0);
+            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+            $projRow.hide();
+            $('label[for="issue-create-issue-type"]').text("Demand Type");
+          }
+        }
+      }
+    }catch(e){}
+  }
+
+  function addCSSRule(sheet, selector, rules, index){
+    try{
+      if (!sheet) return;
+      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
+      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
+    }catch(e){}
+  }
+
+  function hidePriority(){
+    try{
+      const p = window.location.pathname || "";
+      const qs = window.location.search || "";
+      const match = p.includes("RapidBoard.jspa") &&
+        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      if (match){
+        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
+        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
+      }
+    }catch(e){}
+  }
+
+  function replaceTAT(){
+    try{
+      if (window.JIRA && JIRA.ViewIssueTabs){
+        JIRA.ViewIssueTabs.onTabReady(function(){
+          const ttsSLA = $("#tts-sla-panel_heading");
+          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
+            ttsSLA.find(".toggle-title").last().text("TAT Panel");
+            ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
+          }
+        });
+      }
+    }catch(e){}
+  }
+
+  replaceTAT();
+  $(window).on("load", function(){
+    overwriteNewDemandNames();
+    hidePriority();
+  });
+})();
+</script>
+
+<!-- =================== Tempo Work Attribute Helper — v5.8 (PROD) =================== -->
 <script>
 (() => {
   /* v5.8
-   * - Always re-populate the Task <select> after the dialog remounts.
-   * - Uses an in-memory options cache; fetch only when not cached.
-   * - Dialog-scoped button disable (no toolbar interference) preserved.
+   * - Dialog-scoped disable when Task empty or AC warning active.
+   * - Parent-only warning (no warning for subtasks / Change Request).
+   * - Always re-populate Task after Cancel via options cache/fetch.
+   * - Safe network guards: never inject into Tempo search POSTs.
    */
 
   /* ---------- Config (PROD) ---------- */
   const ATTR_ID        = 14;
   const ATTR_KEY       = "_Task_";
   const NATIVE_LABEL   = "Task";
-  const CUSTOM_LABEL   = "Task";
+  const CUSTOM_LABEL   = "Task";               // no “(from API)”
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
   const AC_FIELD       = "customfield_17447";
   const AC_WARN_TEXT   =
@@ -271,11 +396,8 @@
 
   async function fetchOptionsFor(issueKey) {
     if (!issueKey) return [];
-    // 1) if cached, return immediately
     if (S.optionsCache.has(issueKey)) return S.optionsCache.get(issueKey);
-    // 2) if already fetching, await the same promise
     if (S.fetching.has(issueKey)) return S.fetching.get(issueKey);
-    // 3) fetch and cache
     const p = (async () => {
       const url = `${JSONP_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}`;
       const data = await jsonp(url).catch(() => ({}));
@@ -337,7 +459,6 @@
         select.addEventListener("change", () => { S.selection = select.value || ""; applyGate(form); });
       }
 
-      // Resolve issueKey (DOM or network fallback for edit)
       let issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey || null;
       if (!issueKey) {
         const wlId = form.getAttribute("data-worklog-id") ||
@@ -365,7 +486,6 @@
 
       if (issueKey && S.lastIssueKey !== issueKey) { S.lastIssueKey = issueKey; S.selection = ""; }
 
-      // ✅ Always (re)fill the select (options come from cache or fetch if missing)
       if (S.lastIssueKey) {
         const options = await fetchOptionsFor(S.lastIssueKey).catch(() => []);
         fillSelect(select, options, S.selection);
