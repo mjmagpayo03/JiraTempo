@@ -69,7 +69,7 @@
       } else if (url.includes("CreateIssue.jspa")){
         const $projRow = $('label[for="issue-create-project-name"]').parent();
         const projectName = $projRow.children().eq(1).text();
-        if (projectName === "Demand Management" || "Demand Management UAT"){
+        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
           const $typeRow = $('label[for="issue-create-issue-type"]').parent();
           const issueType = $typeRow.children().eq(2).text();
           if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
@@ -126,16 +126,17 @@
 })();
 </script>
 
-<!-- ===================== 2) Tempo Work Attribute Helper — v7.1 ===================== -->
+<!-- ===================== 2) Tempo Work Attribute Helper — v7.2 ===================== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — v7.1
+   * Tempo Work Attribute Helper — v7.2
    * - Create + Edit (Grid/List)
    * - JSONP Task dropdown (ScriptRunner endpoint)
    * - AC warning (parent DM issues missing Activity Code) + hard submit block
    * - Injects Task using DC map-of-objects AND auto-discovers the canonical key
-   *   by calling /rest/tempo-timesheets/4/work-attributes (e.g. "_Task_" vs "Task").
+   *   via /rest/tempo-timesheets/4/work-attributes (e.g. "_Task_" vs "Task")
+   * - Disables & hard-blocks “Log Time / Update” while Task is blank
    * ============================================================ */
 
   /* ---------- Config ---------- */
@@ -168,12 +169,13 @@
     worklogKeyCache: new Map(),   // worklogId -> issueKey
     lastWorklogId: null,
     lastBlock: false,
-    attrKey: null,                // ← canonical Tempo key for “Task”
+    attrKey: null,                // canonical Tempo key for “Task”
     attrKeyLoaded: false
   };
 
   const log  = (...a) => console.log("%c[WorkAttr]", "color:#2aa", ...a);
   const warn = (...a) => console.warn("%c[WorkAttr]", "color:#d80", ...a);
+  const normalizeName = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
 
   /* ---------- CSS ---------- */
   function onceStyle() {
@@ -196,7 +198,6 @@
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
   const getForm = () => document.querySelector("#worklogForm");
-  const normalizeName = s => String(s||"").toLowerCase().replace(/[^a-z]/g,"");
 
   /* ---------- Canonical Tempo key discovery ---------- */
   async function loadTempoAttrKey(){
@@ -212,8 +213,7 @@
         if (m?.key){ S.attrKey = String(m.key); log("Tempo canonical key:", S.attrKey); return S.attrKey; }
       }
     }catch(e){}
-    // Fallbacks — many DC installs use _Task_ as the actual key
-    S.attrKey = "_Task_";
+    S.attrKey = "_Task_"; // fallback commonly used on DC
     log("Tempo canonical key fallback:", S.attrKey);
     return S.attrKey;
   }
@@ -236,10 +236,9 @@
     let attrs = obj.attributes;
     if (!attrs || typeof attrs !== "object" || Array.isArray(attrs)) attrs = {};
 
-    // Prefer a key already present; else the canonical server key; else fallback
     let key = pickAttrKeyFromMap(attrs) || S.attrKey || await loadTempoAttrKey();
 
-    // remove other Task-like keys so only one remains
+    // allow only one Task-like key
     Object.keys(attrs).forEach(k => { if (normalizeName(k)==="task" && k!==key) delete attrs[k]; });
 
     attrs[key] = { key, value: chosen };
@@ -257,7 +256,7 @@
       const names = (me?.groups?.items || []).map(g => (g?.name || "").toUpperCase());
       S.ktaxa = names.includes(KTAXA_GROUP_NAME.toUpperCase());
     } catch { S.ktaxa = false; }
-    return S.ktaxa;
+    return S.ktAXA;
   }
 
   /* ---------- Issue key resolution ---------- */
@@ -442,22 +441,70 @@
   const getCustomSelect = (form) => form?.querySelector("#custom-workattr-select") || null;
   const getWarnBox     = (form) => form?.querySelector("#custom-workattr-warning") || null;
 
+  /* ---------- Submit button handling ---------- */
+  function getDialogRoot(form){
+    return form?.closest('[role="dialog"], .aui-dialog2, [aria-modal="true"], [data-testid*="modal"], [data-test-id*="modal"], [class*="Dialog"]')
+           || document;
+  }
+
   function getSubmitBtn(form) {
-    const sels = [
-      'button[name="submitWorklogButton"]',
-      'button[type="submit"]',
-      'button[id*="submit"][id*="worklog"]',
-      'button[data-test-id*="submit"]',
-      'button[data-testid*="submit"]',
-      'button[data-test-id*="log"]',
-      'button[data-testid*="log"]'
-    ];
-    for (const s of sels){ const b=form.querySelector(s); if (b) return b; }
-    const byText = [...(form.querySelectorAll('button, [role="button"]')||[])]
-      .find(b=>/log time|update/i.test((b.textContent||'').trim()));
-    if (byText) return byText;
-    return [...(form.querySelectorAll('button')||[])].reverse()
-      .find(b=>/primary|aui-button-primary/i.test(b.className)) || null;
+    const scope = getDialogRoot(form);
+
+    let btn =
+      scope.querySelector('button[name="submitWorklogButton"]') || // common Tempo button
+      scope.querySelector('button[type="submit"]') ||
+      scope.querySelector('button[id*="submit"][id*="worklog"]') ||
+      scope.querySelector('button[data-test-id*="submit"]') ||
+      scope.querySelector('button[data-testid*="submit"]');
+
+    if (!btn) {
+      const candidates = [...scope.querySelectorAll('button, [role="button"]')];
+      btn = candidates.find(b => /^(log time|update)$/i.test((b.textContent || '').trim()));
+    }
+    if (!btn) {
+      btn = [...scope.querySelectorAll('button')].reverse()
+            .find(b => /primary|aui-button-primary/i.test(b.className));
+    }
+    return btn || null;
+  }
+
+  function enforceDisabled(form, block){
+    const btn = getSubmitBtn(form);
+    if (!btn) return;
+
+    if (block) btn.setAttribute('disabled','disabled'); else btn.removeAttribute('disabled');
+    btn.disabled = !!block;
+    btn.setAttribute('aria-disabled', String(!!block));
+    btn.setAttribute('data-state', block ? 'not-active' : 'active');
+    btn.classList.toggle('workattr-disabled-btn', !!block);
+
+    // hard-block clicks & submits
+    if (!btn.__workattrGuarded){
+      btn.__workattrGuarded = true;
+      btn.addEventListener('click', (ev) => { if (S.lastBlock){ ev.stopImmediatePropagation(); ev.preventDefault(); } }, true);
+      const formEl = form || btn.closest('form');
+      if (formEl && !formEl.__workattrSubmitGuard){
+        formEl.__workattrSubmitGuard = true;
+        formEl.addEventListener('submit', (ev) => { if (S.lastBlock){ ev.stopImmediatePropagation(); ev.preventDefault(); } }, true);
+        formEl.addEventListener('keydown', (ev) => {
+          if (S.lastBlock && ev.key === 'Enter'){ ev.stopImmediatePropagation(); ev.preventDefault(); }
+        }, true);
+      }
+    }
+
+    // brief sticky re-enforcement (Tempo sometimes flips late)
+    if (S.lastBlock && !btn.__workattrSticky) {
+      btn.__workattrSticky = setInterval(() => {
+        btn.disabled = true;
+        btn.setAttribute('disabled','disabled');
+        btn.setAttribute('aria-disabled','true');
+        btn.setAttribute('data-state','not-active');
+        btn.classList.add('workattr-disabled-btn');
+      }, 200);
+      setTimeout(() => { clearInterval(btn.__workattrSticky); btn.__workattrSticky = null; }, 1800);
+    } else if (!S.lastBlock && btn.__workattrSticky) {
+      clearInterval(btn.__workattrSticky); btn.__workattrSticky = null;
+    }
   }
 
   /* ---------- JSONP options ---------- */
@@ -500,25 +547,6 @@
   }
 
   /* ---------- Gate (warning + disable + hard block) ---------- */
-  function enforceDisabled(form, block){
-    const btn = getSubmitBtn(form);
-    if (!btn) return;
-    btn.disabled = !!block;
-    btn.setAttribute("aria-disabled", String(!!block));
-    btn.classList.toggle("workattr-disabled-btn", !!block);
-    setTimeout(()=>{ btn.disabled=!!block; btn.setAttribute("aria-disabled", String(!!block));
-      btn.classList.toggle("workattr-disabled-btn", !!block); }, 80);
-
-    if (!btn.__workattrGuarded){
-      btn.__workattrGuarded = true;
-      btn.addEventListener("click", (ev) => { if (S.lastBlock){ ev.stopImmediatePropagation(); ev.preventDefault(); } }, true);
-    }
-    if (!form.__workattrSubmitGuard){
-      form.__workattrSubmitGuard = true;
-      form.addEventListener("submit", (ev) => { if (S.lastBlock){ ev.stopImmediatePropagation(); ev.preventDefault(); } }, true);
-    }
-  }
-
   async function getIssueMeta(issueKey) {
     if (!issueKey) return { isParent:true, hasAC:true };
     if (S.typeCache.has(issueKey) && S.acCache.has(issueKey)) {
@@ -560,7 +588,10 @@
     const key = S.lastIssueKey;
     const select = getCustomSelect(form);
     const warnBox = getWarnBox(form);
-    const hasTask = !!(select && select.value);
+
+    // treat placeholder/whitespace/null/undefined as blank
+    const rawVal  = (select && String(select.value || '').trim()) || '';
+    const hasTask = !!(select && select.selectedIndex > 0 && rawVal && !/^null|undefined$/i.test(rawVal));
 
     let showWarn = false;
     if (key && isDM(key) && !EXEMPT_ISSUES.has(key)) {
@@ -571,6 +602,17 @@
 
     S.lastBlock = (showWarn || !hasTask);
     enforceDisabled(form, S.lastBlock);
+
+    // re-enforce briefly after dialog opens—Tempo sometimes flips state late
+    const btn = getSubmitBtn(form);
+    if (btn) {
+      if (S.lastBlock && !btn.__workattrSticky) {
+        btn.__workattrSticky = setInterval(() => enforceDisabled(form, S.lastBlock), 200);
+        setTimeout(() => { clearInterval(btn.__workattrSticky); btn.__workattrSticky = null; }, 1800);
+      } else if (!S.lastBlock && btn.__workattrSticky) {
+        clearInterval(btn.__workattrSticky); btn.__workattrSticky = null;
+      }
+    }
   }
 
   /* ---------- Loader ---------- */
@@ -580,7 +622,7 @@
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer = setTimeout(async () => {
-      await loadTempoAttrKey();  // ← learn the canonical key asap
+      await loadTempoAttrKey();  // learn canonical key early
 
       const issueKey = (await resolveIssueKey(form)) || S.lastSeenIssueKey;
       if (!issueKey) { warn("issueKey not found"); return; }
@@ -735,8 +777,8 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    loadTempoAttrKey();  // fire in the background so we know the key early
-    log("Ready (v7.1)");
+    loadTempoAttrKey();  // kick off discovery of canonical key
+    log("Ready (v7.2)");
   }
 
   if (document.readyState === "loading") {
