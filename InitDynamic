@@ -1,37 +1,34 @@
-<!-- ===== Tempo Work Attribute Helper — Core v5 (parent-only warning) ===== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — Core v5 (parent-only warning)
-   * - PROD fallback key changed to _Task_
-   * - Warning shows only for parent DM issues (not sub-tasks, not Change Request)
-   * - No button disabling; warning only
-   * Keeps:
+   * Tempo Work Attribute Helper — Core v5.3 (Prod)
+   * - Warning-only (no button disable)
    * - KTAXA bypass
-   * - JSONP Task select
-   * - Injection guard for Tempo search APIs
-   * - DOM + network issueKey discovery
+   * - JSONP Task options
+   * - DOM + network discovery of issueKey
+   * - NEW: label is "Task" (no "(from API)")
+   * - NEW: when editing from grid, resolve issueKey via worklogId
    * ============================================================ */
 
-  /* ---------- Config ---------- */
-  const ATTR_ID        = 14;
-  const ATTR_KEY       = "_Task_";   // PROD fallback key
+  /* ---------- Config (PROD) ---------- */
+  const ATTR_ID        = 14;             // keep if unchanged in prod
+  const ATTR_KEY       = "_Task_";       // prod key
   const NATIVE_LABEL   = "Task";
-  const CUSTOM_LABEL   = "Task (from API)";
+  const CUSTOM_LABEL   = "Task";         // <— no “(from API)”
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
-  const AC_FIELD       = "customfield_17447";
+  const AC_FIELD       = "customfield_17447";     // Activity Code
   const AC_WARN_TEXT   =
     'Log Time is disabled since Activity Code is not yet available. ' +
     'Please select your Domain BAU demand to log it temporarily to BAU.';
+  // prod exemptions list you gave me
   const EXEMPT_ISSUES  = new Set([
-    "DM-36382",
     "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240","DM-50241",
     "DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244","DM-50245","DM-50246",
     "DM-47406","DM-47407","DM-47408","DM-47409","DM-47410","DM-47484","DM-47391","DM-47392",
     "DM-47394","DM-47395","DM-47671","DM-47396","DM-47397","DM-47399","DM-47400","DM-47401",
     "DM-47402","DM-47403","DM-47404","DM-47405"
   ]);
-  const KTAXA_GROUP_NAME = "DM-KTAXA";
+  const KTAXA_GROUP_NAME   = "DM-KTAXA";
   const OBSERVE_DEBOUNCE_MS = 120;
 
   /* ---------- State ---------- */
@@ -41,8 +38,9 @@
     lastSeenIssueKey: null,
     lastOptionsKey: null,
     selection: "",
-    fetching: new Map(),
-    factsCache: new Map(),  // { ac:boolean, isSubtask:boolean, typeName:string }
+    fetching: new Map(),     // issueKey -> Promise of options
+    acCache: new Map(),      // issueKey -> boolean (has AC)
+    jiraCache: new Map(),    // issueKey -> Jira issue JSON (issuetype, parent, etc)
     wiredXHR: false,
     wiredFetch: false,
     bodyMO: null,
@@ -74,7 +72,7 @@
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
 
-  function getForm() { return document.querySelector("#worklogForm"); }
+  function getForm(){ return document.querySelector("#worklogForm"); }
 
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
@@ -88,29 +86,38 @@
     return S.ktaxa;
   }
 
+  /* ---------- Resolve issueKey ---------- */
   function extractIssueKeyFromDOM(form) {
     if (!form) return null;
+
+    // typical anchor chip inside the dialog
     for (const a of form.querySelectorAll('a[href*="/browse/"]')) {
-      const m = (a.getAttribute('href') || '').match(RX_KEY);
+      const m = (a.getAttribute("href") || "").match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
+
+    // any element with likely data attributes
     for (const el of form.querySelectorAll('[data-issue-key],[data-issueKey],[data-testid*="issue"],[data-test-id*="issue"]')) {
       const bag = [
-        el.getAttribute('data-issue-key') || '',
-        el.getAttribute('data-issueKey')  || '',
-        el.getAttribute('data-testid')    || '',
-        el.getAttribute('data-test-id')   || '',
-        el.textContent || ''
-      ].join(' ');
+        el.getAttribute("data-issue-key") || "",
+        el.getAttribute("data-issueKey")  || "",
+        el.getAttribute("data-testid")    || "",
+        el.getAttribute("data-test-id")   || "",
+        el.textContent || ""
+      ].join(" ");
       const m = bag.match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
+
+    // sometimes description carries "Working on issue KEY"
     const desc = form.querySelector('#comment, textarea[id*="comment"]');
     if (desc) {
-      const m = (desc.value || '').match(RX_KEY);
+      const m = (desc.value || "").match(RX_KEY);
       if (m) return m[0].toUpperCase();
     }
-    const m = (form.textContent || '').match(RX_KEY);
+
+    // final try within dialog text
+    const m = (form.textContent || "").match(RX_KEY);
     return m ? m[0].toUpperCase() : null;
   }
 
@@ -132,6 +139,32 @@
     }
   }
 
+  // NEW: if editing from grid, use worklogId to fetch its issue key
+  async function resolveIssueKeyViaWorklogId(form) {
+    const wlId = form?.getAttribute("data-worklog-id");
+    if (!wlId) return null;
+
+    const tries = [
+      `/rest/tempo-timesheets/4/worklogs/${wlId}`,
+      `/rest/tempo-core/4/worklogs/${wlId}`,
+      `/rest/tempo-core/3/worklogs/${wlId}`,
+      `/rest/tempo-core/1/worklogs/${wlId}`
+    ];
+    for (const url of tries) {
+      try {
+        const r = await fetch(url, { credentials: "same-origin" });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const key =
+          (j?.issue && (j.issue.key || j.issue?.issueKey)) ||
+          j?.issueKey ||
+          j?.key || null;
+        if (key) return String(key).toUpperCase();
+      } catch {}
+    }
+    return null;
+  }
+
   /* ---------- DOM task row ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
@@ -150,6 +183,7 @@
     const row = findNativeTaskRow(form);
     if (!row) return null;
 
+    // hide native Tempo field
     row.classList.add("workattr-hide-native");
 
     host = document.createElement("div");
@@ -214,38 +248,48 @@
     return p;
   }
 
-  // Cache issue facts: activity code presence + isSubtask + issue type name
-  async function getIssueFacts(issueKey) {
-    if (!issueKey) return { ac:true, isSubtask:false, typeName:"" };
-    if (S.factsCache.has(issueKey)) return S.factsCache.get(issueKey);
+  async function getJiraIssue(issueKey) {
+    if (!issueKey) return null;
+    if (S.jiraCache.has(issueKey)) return S.jiraCache.get(issueKey);
+    try {
+      // pull Activity Code + type + parent in one call
+      const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD},issuetype,parent`);
+      if (!r.ok) throw 0;
+      const j = await r.json();
+      S.jiraCache.set(issueKey, j);
+      return j;
+    } catch { return null; }
+  }
 
-    const facts = await (async () => {
-      try {
-        const r = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueKey)}?fields=${AC_FIELD},issuetype,parent`);
-        if (!r.ok) throw 0;
-        const j = await r.json();
-        const fields = j?.fields || {};
-        const acVal = fields?.[AC_FIELD];
-        const ac = !!(acVal && String(acVal).trim().length > 0);
-        const it = fields?.issuetype || {};
-        const isSubtask = (it?.subtask === true) || !!fields?.parent;
-        const typeName = (it?.name || "");
-        return { ac, isSubtask, typeName };
-      } catch {
-        // Fail-open: do not warn if we can't read facts
-        return { ac:true, isSubtask:false, typeName:"" };
-      }
-    })();
+  async function hasActivityCode(issueKey) {
+    if (!issueKey) return false;
+    if (S.acCache.has(issueKey)) return S.acCache.get(issueKey);
 
-    S.factsCache.set(issueKey, facts);
-    return facts;
+    let ok = true;
+    try {
+      const j = await getJiraIssue(issueKey);
+      const v = j?.fields?.[AC_FIELD];
+      ok = !!(v && String(v).trim().length > 0);
+    } catch {
+      // fail-open if Jira lookup hiccups
+      ok = true;
+    }
+    S.acCache.set(issueKey, ok);
+    return ok;
+  }
+
+  async function isSubtaskOrCR(issueKey) {
+    const j = await getJiraIssue(issueKey);
+    const typeName = (j?.fields?.issuetype?.name || "").toLowerCase();
+    const hasParent = !!j?.fields?.parent;
+    return hasParent || /change\s*request/i.test(typeName);
   }
 
   /* ---------- Warning-only gate ---------- */
   async function applyGate(form) {
     if (!form) return;
 
-    // KTAXA: native Task, no warning
+    // KTAXA: show native Task, no warning
     if (await isKTAXA()) {
       const row = findNativeTaskRow(form);
       if (row) row.classList.remove("workattr-hide-native");
@@ -259,16 +303,17 @@
     const warnBox = getWarnBox(form);
     if (!key) { if (warnBox) warnBox.style.display = "none"; return; }
 
-    // Only warn for parent DM issues (not sub-tasks, not Change Request)
-    let show = false;
+    // Show warning only for DM parent issues not in exemption list
     if (isDM(key) && !EXEMPT_ISSUES.has(key)) {
-      const facts = await getIssueFacts(key);
-      const isChangeReq = /\bchange\s*request\b/i.test(facts.typeName || "");
-      if (!facts.isSubtask && !isChangeReq) {
-        show = !facts.ac;  // warn only if AC is blank
-      }
+      const skip = await isSubtaskOrCR(key);      // no warning for subtasks/CR
+      if (skip) { if (warnBox) warnBox.style.display = "none"; return; }
+
+      const ac = await hasActivityCode(key);
+      const show = !ac;
+      if (warnBox) warnBox.style.display = show ? "block" : "none";
+    } else {
+      if (warnBox) warnBox.style.display = "none";
     }
-    if (warnBox) warnBox.style.display = show ? "block" : "none";
   }
 
   /* ---------- Main loader ---------- */
@@ -278,7 +323,15 @@
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer = setTimeout(async () => {
-      const issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey;
+      // 1) try DOM
+      let issueKey = extractIssueKeyFromDOM(form);
+
+      // 2) fall back to last sniffed
+      if (!issueKey) issueKey = S.lastSeenIssueKey || null;
+
+      // 3) NEW: if still not found (typical when editing from grid), use worklogId lookup
+      if (!issueKey) issueKey = await resolveIssueKeyViaWorklogId(form);
+
       if (!issueKey) { warn("issueKey not found"); return; }
 
       if (S.lastIssueKey !== issueKey) {
@@ -338,7 +391,7 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards (don’t touch Tempo searches) ---------- */
+  /* ---------- Injection guards (keep) ---------- */
   function looksLikeCreateUpdate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
     if ("started" in bodyObj) return true;
@@ -350,7 +403,7 @@
     return false;
   }
 
-  /* ---------- Network wiring (for attribute injection) ---------- */
+  /* ---------- Network wiring (kept; no disable) ---------- */
   function wireNetwork() {
     // XHR
     if (!S.wiredXHR) {
@@ -384,9 +437,7 @@
               log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
             }
           }
-        } catch (e) {
-          warn("XHR inject skipped due to error:", e);
-        }
+        } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
       };
     }
@@ -417,9 +468,7 @@
               }
             }
           }
-        } catch (e) {
-          warn("fetch inject skipped due to error:", e);
-        }
+        } catch (e) { warn("fetch inject skipped:", e); }
         return _fetch(input, init);
       };
     }
@@ -430,9 +479,8 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v5 parent-only warning)");
+    log("Ready (v5.3)");
   }
-
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", boot);
   } else {
