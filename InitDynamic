@@ -1,10 +1,120 @@
-<!-- ===== Tempo Work Attribute Helper — Core v5.6 (Prod) ===== -->
+<font color="#00008f">
+<b>
+<ul>
+     <!--<li>Confluence Application will have a quick maintenance schedule:  <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font> Please save all work 30 Minutes before the change window to avoid any loss of data.</li>-->
+    <!--<li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li>-->
+    <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
+    <!--    <li>Tempo Charging for August - December 2024: <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a> </li> -->
+</ul>
+</b>
+</font>
+
+<style>
+#announcement-banner { background-color:#9fd9b4; }
+</style>
+
+<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
+<script type="text/javascript">
+(function(){
+  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
+  if (!$) { return; }
+
+  function removeIssueType(){
+    try{
+      const HIDE = new Set(["Onboard Entity User","Onboard Platform User","Defect","Feedback","Epic","Story","Task","Bug"]);
+      $(".aui-list-item-link").filter(function(){ return HIDE.has($(this).text().trim()); }).parent().hide();
+    }catch(e){}
+  }
+
+  function removeUnwantedIssueTypes(){
+    try{
+      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
+      $("#issuetype-field").off(".removeIssueType")
+        .on("keyup.removeIssueType", removeIssueType)
+        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
+      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
+        setTimeout(() => { if (typeof window.findIssueType === "function") window.findIssueType(); else removeIssueType(); }, 1000);
+      });
+    }catch(e){}
+  }
+
+  function overwriteNewDemandNames(){
+    try{
+      const url = String(window.location.href);
+      if (url.includes("&demandnew=true")) removeUnwantedIssueTypes();
+      if (url.includes("&demandcustomized=true")){
+        const hdr = $(".aui-page-header-inner").get(0);
+        if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
+        $('label[for="issuetype-field"]').text("Demand Type");
+        $('label[for="issue-create-issue-type"]').text("Demand Type");
+        $('label[for="project-field"]').parent().hide();
+        $('label[for="issue-create-project-name"]').parent().hide();
+      } else if (url.includes("CreateIssue.jspa")){
+        const $projRow = $('label[for="issue-create-project-name"]').parent();
+        const projectName = $projRow.children().eq(1).text();
+        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
+          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
+          const issueType = $typeRow.children().eq(2).text();
+          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
+            const hdr = $(".aui-page-header-inner").get(0);
+            if (hdr && hdr.innerHTML) hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand");
+            $projRow.hide();
+            $('label[for="issue-create-issue-type"]').text("Demand Type");
+          }
+        }
+      }
+    }catch(e){}
+  }
+
+  function addCSSRule(sheet, selector, rules, index){
+    try{
+      if (!sheet) return;
+      if ("insertRule" in sheet) sheet.insertRule(`${selector}{${rules}}`, index);
+      else if ("addRule" in sheet) sheet.addRule(selector, rules, index);
+    }catch(e){}
+  }
+
+  function hidePriority(){
+    try{
+      const p = window.location.pathname || "";
+      const qs = window.location.search || "";
+      const match = p.includes("RapidBoard.jspa") && (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      if (match){
+        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
+        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
+      }
+    }catch(e){}
+  }
+
+  function replaceTAT(){
+    try{
+      if (window.JIRA && JIRA.ViewIssueTabs){
+        JIRA.ViewIssueTabs.onTabReady(function(){
+          const ttsSLA = $("#tts-sla-panel_heading");
+          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
+            ttsSLA.find(".toggle-title").last().text("TAT Panel");
+            ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
+          }
+        });
+      }
+    }catch(e){}
+  }
+
+  replaceTAT();
+  $(window).on("load", function(){
+    overwriteNewDemandNames();
+    hidePriority();
+  });
+})();
+</script>
+
+<!-- ===== Tempo Work Attribute Helper — Core v5.7 (PROD) ===== -->
 <script>
 (() => {
-  /* v5.6
-   * - Disable button when Task is empty even if issueKey is not known yet
-   * - Submit button lookup now falls back to a global query
-   * - Everything else unchanged from v5.5
+  /* v5.7 changes
+   * - Button disable is now scoped to the dialog that contains the worklog form.
+   * - No interference with the top-right toolbar “Log Time” button.
+   * - Keeps: empty Task disables, parent-only AC warning disables, JSONP Task, KTAXA bypass, safe injection.
    */
 
   /* ---------- Config (PROD) ---------- */
@@ -134,17 +244,16 @@
     if (wl) S.lastSeenWorklogId = wl;
   }
 
-  function getWorklogIdFromForm(form){
+  /* ---------- Dialog-scoped helpers ---------- */
+  function getDialogRoot(formOrNode){
+    const n = formOrNode || getForm();
     return (
-      form?.getAttribute("data-worklog-id") ||
-      form?.querySelector("[data-worklog-id]")?.getAttribute("data-worklog-id") ||
-      form?.querySelector('input[name="worklogId"]')?.value ||
-      form?.querySelector('input[name="id"]')?.value ||
+      n?.closest('[role="dialog"], .aui-dialog2, [data-testid*="dialog"], [data-test-id*="dialog"]') ||
+      document.querySelector('[role="dialog"], .aui-dialog2, [data-testid*="dialog"], [data-test-id*="dialog"]') ||
       null
     );
   }
 
-  /* ---------- DOM helpers ---------- */
   function findNativeTaskRow(form) {
     if (!form) return null;
     let lab = form.querySelector(`label[for="${ATTR_KEY}"]`);
@@ -180,12 +289,13 @@
   function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
   function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
 
-  // NEW: global fallback to catch buttons outside #worklogForm
+  // NOW: only search within the dialog that contains the form/host
   function getSubmitBtn(form){
+    const root = getDialogRoot(form);
+    if (!root) return null;
     return (
-      form?.querySelector('[name="submitWorklogButton"]') ||
-      document.querySelector('button[name="submitWorklogButton"]') ||
-      [...(document.querySelectorAll('button')||[])].find(b => /^(log time|update)$/i.test((b.textContent||'').trim())) ||
+      root.querySelector('button[name="submitWorklogButton"]') ||
+      [...root.querySelectorAll('button')].find(b => /^(log time|update)$/i.test((b.textContent || '').trim())) ||
       null
     );
   }
@@ -238,8 +348,10 @@
     return hasParent || /change\s*request/i.test(typeName);
   }
 
-  /* ---------- Warning + Disable ---------- */
+  /* ---------- Warning + Disable (dialog scoped) ---------- */
   function setSubmitBlocked(form, blocked) {
+    const root = getDialogRoot(form);
+    if (!root) return;
     const btn = getSubmitBtn(form);
     if (btn) {
       btn.disabled = !!blocked;
@@ -297,8 +409,7 @@
     if (!form) return;
 
     if (await isKTAXA()) {
-      const row = findNativeTaskRow(form);
-      if (row) row.classList.remove("workattr-hide-native");
+      const row = findNativeTaskRow(form); if (row) row.classList.remove("workattr-hide-native");
       form.querySelector("#custom-workattr-host")?.remove();
       const warnBox = getWarnBox(form); if (warnBox) warnBox.style.display = "none";
       setSubmitBlocked(form, false);
@@ -331,7 +442,7 @@
     if (S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer = setTimeout(async () => {
-      // Always scaffold the UI and apply "empty task ⇒ disabled" even without issueKey
+      // Always scaffold UI first so “empty task ⇒ disabled” works even before issueKey resolves
       onceStyle();
       const host = ensureCustomHost(form);
       if (!host) return;
@@ -339,16 +450,17 @@
       const select = getCustomSelect(form);
       if (!select.__workattrBound) {
         select.__workattrBound = true;
-        select.addEventListener("change", () => {
-          S.selection = select.value || "";
-          applyGate(form);
-        });
+        select.addEventListener("change", () => { S.selection = select.value || ""; applyGate(form); });
       }
 
-      // Try to resolve the issue key
+      // Resolve issueKey if possible
       let issueKey = extractIssueKeyFromDOM(form) || S.lastSeenIssueKey || null;
       if (!issueKey) {
-        const wlId = getWorklogIdFromForm(form) || S.lastSeenWorklogId || null;
+        const wlId = form.getAttribute("data-worklog-id") ||
+                     form.querySelector("[data-worklog-id]")?.getAttribute("data-worklog-id") ||
+                     form.querySelector('input[name="worklogId"]')?.value ||
+                     form.querySelector('input[name="id"]')?.value ||
+                     S.lastSeenWorklogId || null;
         if (wlId) issueKey = await (async () => {
           const tries = [
             `/rest/tempo-timesheets/4/worklogs/${wlId}`,
@@ -356,25 +468,18 @@
             `/rest/tempo-core/3/worklogs/${wlId}`,
             `/rest/tempo-core/1/worklogs/${wlId}`
           ];
-          for (const u of tries) {
-            try {
-              const r = await fetch(u, { credentials: "same-origin" });
-              if (!r.ok) continue;
-              const j = await r.json();
-              const k = (j?.issue && (j.issue.key || j.issue?.issueKey)) || j?.issueKey || j?.key || null;
-              if (k) return String(k).toUpperCase();
-            } catch {}
-          }
+          for (const u of tries) try {
+            const r = await fetch(u, { credentials: "same-origin" });
+            if (!r.ok) continue;
+            const j = await r.json();
+            const k = (j?.issue && (j.issue.key || j.issue?.issueKey)) || j?.issueKey || j?.key || null;
+            if (k) return String(k).toUpperCase();
+          } catch {}
           return null;
         })();
       }
 
-      // If we have an issue key, (re)load options for it
-      if (issueKey && S.lastIssueKey !== issueKey) {
-        S.lastIssueKey = issueKey;
-        S.selection = "";
-        S.lastOptionsKey = null; // force options refresh below
-      }
+      if (issueKey && S.lastIssueKey !== issueKey) { S.lastIssueKey = issueKey; S.selection = ""; S.lastOptionsKey = null; }
 
       if (S.lastIssueKey && S.lastOptionsKey !== S.lastIssueKey) {
         const options = await fetchOptionsFor(S.lastIssueKey).catch(() => []);
@@ -382,7 +487,6 @@
         fillSelect(select, options, S.selection);
       }
 
-      // Apply gate (will disable when empty; will also show warning if applicable)
       await applyGate(form);
       setTimeout(() => applyGate(form), 120);
     }, OBSERVE_DEBOUNCE_MS);
@@ -407,7 +511,7 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards & network wiring (unchanged) ---------- */
+  /* ---------- Injection guards & network wiring ---------- */
   function looksLikeCreateUpdate(bodyObj) {
     if (!bodyObj || typeof bodyObj !== "object") return false;
     if ("started" in bodyObj) return true;
@@ -440,10 +544,7 @@
           if (looksLikeCreateUpdate(obj)) {
             const form = getForm(); const sel = form && getCustomSelect(form);
             const chosen = (sel && sel.value) || S.selection || "";
-            if (chosen) {
-              obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen;
-              body = JSON.stringify(obj); log("✅ Injected into XHR", { [ATTR_KEY]: chosen });
-            }
+            if (chosen) { obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen; body = JSON.stringify(obj); log("✅ Injected into XHR", { [ATTR_KEY]: chosen }); }
           }
         } catch (e) { warn("XHR inject skipped:", e); }
         return _send.call(this, body);
@@ -464,11 +565,7 @@
             if (looksLikeCreateUpdate(obj)) {
               const form = getForm(); const sel = form && getCustomSelect(form);
               const chosen = (sel && sel.value) || S.selection || "";
-              if (chosen) {
-                obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen;
-                init = { ...init, body: JSON.stringify(obj) };
-                log("✅ Injected into fetch", { [ATTR_KEY]: chosen });
-              }
+              if (chosen) { obj.attributes = obj.attributes || {}; obj.attributes[ATTR_KEY] = chosen; init = { ...init, body: JSON.stringify(obj) }; log("✅ Injected into fetch", { [ATTR_KEY]: chosen }); }
             }
           }
         } catch (e) { warn("fetch inject skipped:", e); }
@@ -478,7 +575,7 @@
   }
 
   /* ---------- Boot ---------- */
-  function boot(){ onceStyle(); wireNetwork(); wireObservers(); log("Ready (v5.6)"); }
+  function boot(){ onceStyle(); wireNetwork(); wireObservers(); log("Ready (v5.7)"); }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();
