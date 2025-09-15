@@ -100,12 +100,12 @@
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — v6.3 (row-only hide) ===== -->
+<!-- ===== Tempo Work Attribute Helper — v6.4 ===== -->
 <script>
 (()=>{
 
-  /* Config */
-  const ATTR_KEY = "_Task_";         // PROD key
+  /* ---------- Config ---------- */
+  const ATTR_KEY = "_Task_";            // PROD attribute key
   const NATIVE_LABEL = "Task";
   const CUSTOM_LABEL = "Task";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
@@ -116,7 +116,7 @@
   const OBSERVE_DEBOUNCE_MS = 120;
   const SENTINEL_MS = 2000;
 
-  /* State */
+  /* ---------- State ---------- */
   const S = {
     ktaxa:null,lastIssueKey:null,lastSeenIssueKey:null,lastOptionsKey:null,
     selection:"",fetching:new Map(),acCache:new Map(),typeCache:new Map(),
@@ -126,7 +126,7 @@
   const RX_KEY=/\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM=k=>/^DM-\d+$/i.test(k||"");
   const getForm=()=>document.querySelector("#worklogForm");
-  const safeMatches=(node,sel)=>{try{return !!(node&&node.matches&&node.matches(sel));}catch{return false;}};
+  const safeMatches=(n,s)=>{try{return !!(n&&n.matches&&n.matches(s));}catch{return false;}};
 
   function sniffIssueKeyFromURL(url){
     if(!url) return;
@@ -192,7 +192,7 @@
     S.acCache.set(issueKey,ok); return ok;
   }
 
-  /* === NEW: get the exact field row and only hide that === */
+  /* ===== Row-only hide (no parent climbing) ===== */
   function fieldRow(form, node){
     if(!node) return null;
     const ROW_SEL = '.sc-bKhNmF, .aui-field, [role="group"]';
@@ -208,24 +208,20 @@
   function hideNativeTaskRows(form){
     const host=form.querySelector('#custom-workattr-host');
     const select=form.querySelector('#custom-workattr-select');
-    if(!host || !select) return; // never hide if our host/select isn't present yet
+    if(!host || !select) return;
 
     const rows=new Set();
-
-    // by label text
     for(const lab of form.querySelectorAll('label')){
       const txt=(lab.textContent||'').trim().toLowerCase();
       if(txt===NATIVE_LABEL.toLowerCase() && !lab.closest('#custom-workattr-host')){
         const r=fieldRow(form,lab); if(r) rows.add(r);
       }
     }
-    // by id/name/aria-label (be cautious)
     const q=[`#${CSS.escape(ATTR_KEY)}`,`[name="${ATTR_KEY}"]`,`[aria-label="${NATIVE_LABEL}"]`].join(',');
     for(const ctrl of form.querySelectorAll(q)){
       if(ctrl.closest('#custom-workattr-host')) continue;
       const r=fieldRow(form,ctrl); if(r) rows.add(r);
     }
-
     rows.forEach(r=>r.classList.add('workattr-hide-native'));
   }
 
@@ -234,7 +230,6 @@
     let host=form.querySelector("#custom-workattr-host");
     if(host) return host;
 
-    // find the native row to insert after (if available)
     let insertAfter=null;
     for(const lab of form.querySelectorAll('label')){
       const txt=(lab.textContent||'').trim().toLowerCase();
@@ -255,17 +250,13 @@
     if(insertAfter?.parentElement){ insertAfter.parentElement.insertBefore(host, insertAfter.nextSibling); }
     else{ form.appendChild(host); }
 
-    // now it is safe to hide the native row only
     setTimeout(()=>hideNativeTaskRows(form),50);
-
-    // fallback: if our select didn't populate, unhide native
     setTimeout(()=>{
       const s=form.querySelector('#custom-workattr-select');
       if(!s || s.options.length<=1){
         form.querySelectorAll('.workattr-hide-native').forEach(n=>n.classList.remove('workattr-hide-native'));
       }
     },500);
-
     return host;
   }
 
@@ -413,6 +404,25 @@
     return false;
   }
 
+  /* ---------- Network wiring ---------- */
+  function adaptAttributesForEndpoint(method,url,obj,chosen){
+    const isPUT = method==="PUT";
+    const isWorklogEndpoint = /\/rest\/tempo-timesheets\/\d+\/worklogs(\/\d+\/?)?$/i.test(url||"");
+
+    if(!chosen || !isWorklogEndpoint) return obj;
+
+    if(isPUT){
+      // Use workAttributeValues for updates; remove attributes to avoid 500
+      delete obj.attributes;
+      obj.workAttributeValues = [{ key: ATTR_KEY, value: chosen }];
+    }else{
+      // POST create: keep simple attributes map
+      obj.attributes = obj.attributes || {};
+      obj.attributes[ATTR_KEY] = chosen;
+    }
+    return obj;
+  }
+
   function wireNetwork(){
     if(!S.wiredXHR){
       S.wiredXHR=true;
@@ -426,17 +436,17 @@
       XMLHttpRequest.prototype.send=function(body){
         try{
           if(S.ktaxa===true) return _send.call(this,body);
-          const isMut=/POST|PUT/.test(this.__method||"");
+          const meth=this.__method||"";
+          const isMut=/POST|PUT/.test(meth);
           if(!isMut || !body || typeof body!=="string"){return _send.call(this,body);}
           let obj; try{obj=JSON.parse(body);}catch{obj=null;}
           if(looksLikeCreateUpdate(obj)){
             const form=getForm(); const sel=form&&getCustomSelect(form);
             const chosen=(sel&&sel.value)||S.selection||"";
             if(chosen){
-              obj.attributes=obj.attributes||{};
-              obj.attributes[ATTR_KEY]=chosen;
+              obj = adaptAttributesForEndpoint(meth,this.__url,obj,chosen);
               body=JSON.stringify(obj);
-              console.log("%c[WorkAttr]","color:#2aa","✅ Injected into XHR",{[ATTR_KEY]:chosen});
+              console.log("%c[WorkAttr]","color:#2aa",`✅ Injected into XHR (${meth})`, /PUT/.test(meth)?{workAttributeValues:obj.workAttributeValues}:{[ATTR_KEY]:chosen});
             }
           }
         }catch(e){ console.warn("%c[WorkAttr]","color:#d80","XHR inject skipped:",e); }
@@ -458,10 +468,9 @@
               const form=getForm(); const sel=form&&getCustomSelect(form);
               const chosen=(sel&&sel.value)||S.selection||"";
               if(chosen){
-                obj.attributes=obj.attributes||{};
-                obj.attributes[ATTR_KEY]=chosen;
+                obj = adaptAttributesForEndpoint(meth,url,obj,chosen);
                 init={...init, body:JSON.stringify(obj)};
-                console.log("%c[WorkAttr]","color:#2aa","✅ Injected into fetch",{[ATTR_KEY]:chosen});
+                console.log("%c[WorkAttr]","color:#2aa",`✅ Injected into fetch (${meth})`, /PUT/.test(meth)?{workAttributeValues:obj.workAttributeValues}:{[ATTR_KEY]:chosen});
               }
             }
           }
@@ -490,7 +499,7 @@
     loadForCurrentForm();
   }
 
-  function boot(){ wireNetwork(); wireObservers(); console.log("%c[WorkAttr]","color:#2aa","Ready (v6.3)"); }
+  function boot(){ wireNetwork(); wireObservers(); console.log("%c[WorkAttr]","color:#2aa","Ready (v6.4)"); }
   if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded",boot); } else { boot(); }
 
 })();
