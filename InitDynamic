@@ -1,30 +1,156 @@
-<!-- ===================== Tempo Work Attribute Helper — v6.6 ===================== -->
+<!-- ===================== 1) Static banner ===================== -->
+<font color="#00008f">
+  <b>
+    <ul>
+      <!-- <li>Confluence Application will have a quick maintenance schedule:
+           <font color="#FF0000"> Tuesday 02nd of April 2024 18:00 PM HKT to 19:00 PM HKT </font>
+           Please save all work 30 Minutes before the change window to avoid any loss of data.</li> -->
+      <!-- <li>Please disregard the red banner above. Paid license is already being applied on the system and should be gone within the day</li> -->
+      <li>If you encounter any issues related to Jira and Confluence please raise an incident ticket on our
+        <a href="https://pm.axa-asia.com/servicedesk/customer/portal/2">Service Desk</a></li>
+      <!-- <li>Tempo Charging for August - December 2024:
+           <a href="https://pm.axa-asia.com/browse/DM-44547">AMS BAU</a> and
+           <a href="https://pm.axa-asia.com/browse/DM-44548">AMS Administrative</a></li> -->
+    </ul>
+  </b>
+</font>
+
+<style>
+  #announcement-banner { background-color:#9fd9b4; }
+</style>
+
+<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
+<script type="text/javascript">
+(function(){
+  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
+  if (!$) return;
+
+  function removeIssueType(){
+    try{
+      const HIDE = new Set([
+        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
+        "Epic","Story","Task","Bug"
+      ]);
+      $(".aui-list-item-link").filter(function(){
+        return HIDE.has($(this).text().trim());
+      }).parent().hide();
+    }catch(e){}
+  }
+
+  function removeUnwantedIssueTypes(){
+    try{
+      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
+      $("#issuetype-field")
+        .off(".removeIssueType")
+        .on("keyup.removeIssueType", removeIssueType)
+        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
+      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
+        setTimeout(() => {
+          if (typeof window.findIssueType === "function") { window.findIssueType(); }
+          else { removeIssueType(); }
+        }, 1000);
+      });
+    }catch(e){}
+  }
+
+  function overwriteNewDemandNames(){
+    try{
+      const url = String(window.location.href);
+      if (url.includes("&demandnew=true")){
+        removeUnwantedIssueTypes();
+      }
+      if (url.includes("&demandcustomized=true")){
+        const hdr = $(".aui-page-header-inner").get(0);
+        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+        $('label[for="issuetype-field"]').text("Demand Type");
+        $('label[for="issue-create-issue-type"]').text("Demand Type");
+        $('label[for="project-field"]').parent().hide();
+        $('label[for="issue-create-project-name"]').parent().hide();
+      } else if (url.includes("CreateIssue.jspa")){
+        const $projRow = $('label[for="issue-create-project-name"]').parent();
+        const projectName = $projRow.children().eq(1).text();
+        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
+          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
+          const issueType = $typeRow.children().eq(2).text();
+          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
+            const hdr = $(".aui-page-header-inner").get(0);
+            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+            $projRow.hide();
+            $('label[for="issue-create-issue-type"]').text("Demand Type");
+          }
+        }
+      }
+    }catch(e){}
+  }
+
+  function addCSSRule(sheet, selector, rules, index){
+    try{
+      if (!sheet) return;
+      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
+      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
+    }catch(e){}
+  }
+
+  function hidePriority(){
+    try{
+      const p = window.location.pathname || "";
+      const qs = window.location.search || "";
+      const match = p.includes("RapidBoard.jspa") &&
+        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      if (match){
+        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
+        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
+      }
+    }catch(e){}
+  }
+
+  function replaceTAT(){
+    try{
+      if (window.JIRA && JIRA.ViewIssueTabs){
+        JIRA.ViewIssueTabs.onTabReady(function(){
+          const ttsSLA = $("#tts-sla-panel_heading");
+          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
+            ttsSLA.find(".toggle-title").last().text("TAT Panel");
+            ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
+          }
+        });
+      }
+    }catch(e){}
+  }
+
+  replaceTAT();
+  $(window).on("load", function(){
+    overwriteNewDemandNames();
+    hidePriority();
+  });
+})();
+</script>
+
+<!-- ===================== 2) Tempo Work Attribute Helper — v6.7 ===================== -->
 <script>
 (() => {
   /* ============================================================
-   * Tempo Work Attribute Helper — v6.6
-   * - Works on Create + Edit (Grid & List)
-   * - Resolves issueKey even when Edit modal doesn't show it
+   * Tempo Work Attribute Helper — v6.7
+   * - Create + Edit (Grid/List) robust
+   * - Multi-path issueKey resolution:
+   *   DOM → hidden issueKey → hidden issueId (Jira REST)
+   *   → worklogId/originId (Tempo REST; tries with & without '/')
+   * - Tough button gating & re-enforcement
    * - Task dropdown (custom, JSONP)
    * - Hide native Task row (Grid + List)
    * - Warn for missing Activity Code (parent issues only)
-   * - Disable submit when warning is visible OR no Task selected
-   * - Inject {_Task_: "<choice>"} only for create/update payloads
+   * - Inject {_Task_: "<choice>"} for create/update payloads
    * ============================================================ */
 
   /* ---------- Config ---------- */
   const ATTR_KEY         = "_Task_";             // PROD attribute key
-  const NATIVE_LABEL     = "Task";               // native field label
-  const CUSTOM_LABEL     = "Task";               // shown label (no “from API”)
+  const NATIVE_LABEL     = "Task";
+  const CUSTOM_LABEL     = "Task";
   const JSONP_ENDPOINT   = "/rest/scriptrunner/latest/custom/tempoWorkType";
   const AC_FIELD         = "customfield_17447";  // Activity Code field
-  const EXEMPT_ISSUES    = new Set([
-    // Add demand keys here to suppress the AC warning entirely
-    "DM-50267","DM-50238"
-  ]);
+  const EXEMPT_ISSUES    = new Set(["DM-50267","DM-50238"]);
   const EXEMPT_TYPES     = new Set(["Sub-task","Sub-task (technical)","Change Request"]);
   const KTAXA_GROUP_NAME = "DM-KTAXA";
-
   const OBSERVE_DEBOUNCE_MS = 120;
 
   /* ---------- State ---------- */
@@ -43,8 +169,7 @@
     formMO: null,
     formMOStarted: false,
     debounceTimer: null,
-    // v6.6 additions:
-    worklogKeyCache: new Map(),  // worklogId -> issueKey
+    worklogKeyCache: new Map(),   // worklogId -> issueKey
     lastWorklogId: null,
   };
 
@@ -71,8 +196,7 @@
   /* ---------- Basics ---------- */
   const RX_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/;
   const isDM   = k => /^DM-\d+$/i.test(k || "");
-
-  function getForm() { return document.querySelector("#worklogForm"); }
+  const getForm = () => document.querySelector("#worklogForm");
 
   async function isKTAXA() {
     if (S.ktaxa !== null) return S.ktaxa;
@@ -112,54 +236,82 @@
     return m ? m[0].toUpperCase() : null;
   }
 
-  /* ---------- NEW helpers for v6.6 ---------- */
+  /* ---------- NEW: hidden field helpers & resolvers ---------- */
   function getHidden(form, names){
     for (const n of names){
       const el = form?.querySelector?.(`input[name="${n}"], [id="${n}"]`);
-      if (el && el.value) return String(el.value).trim();
+      if (el && el.value != null && String(el.value).trim() !== "") {
+        return String(el.value).trim();
+      }
     }
     return null;
   }
 
-  // Resolve issueKey reliably in Edit modal (Grid/List)
+  async function fetchTempoWorklog(wlId){
+    // Try with trailing slash first (Tempo sometimes requires it), then without
+    const urls = [
+      `/rest/tempo-timesheets/4/worklogs/${encodeURIComponent(wlId)}/`,
+      `/rest/tempo-timesheets/4/worklogs/${encodeURIComponent(wlId)}`
+    ];
+    for (const u of urls){
+      try{
+        const r = await fetch(u);
+        if (r.ok) return await r.json();
+      }catch(e){}
+    }
+    return null;
+  }
+
+  // Resolve issueKey reliably for Edit modal
   async function resolveIssueKey(form){
-    // 1) Try DOM (links, labels, description)
+    // 1) DOM
     const domKey = extractIssueKeyFromDOM(form);
     if (domKey) return domKey;
 
-    // 2) Try hidden fields the modal sometimes renders
-    const hiddenKey = getHidden(form, ["issueKey", "issue-key"]);
+    // 2) Hidden issueKey
+    const hiddenKey = getHidden(form, ["issueKey","issue-key"]);
     if (hiddenKey) return hiddenKey.toUpperCase();
 
-    // 3) Use worklogId -> GET Tempo worklog -> derive key
-    const wlId = getHidden(form, ["originId", "worklogId", "worklog-id"]) || S.lastWorklogId;
+    // 3) Hidden issueId → Jira REST
+    const issueId = getHidden(form, ["issueId","issue-id"]);
+    if (issueId){
+      try{
+        const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(issueId)}?fields=key`);
+        if (rx.ok){
+          const jj = await rx.json();
+          const key = (jj?.key) || (jj?.fields?.key) || null;
+          if (key) return String(key).toUpperCase();
+        }
+      }catch(e){}
+    }
+
+    // 4) originId/worklogId → Tempo REST → (issue.key or issueId → Jira)
+    const wlId = getHidden(form, ["originId","worklogId","worklog-id"]) || S.lastWorklogId;
     if (!wlId) return null;
 
     if (S.worklogKeyCache.has(wlId)) return S.worklogKeyCache.get(wlId);
 
     try{
-      const r = await fetch(`/rest/tempo-timesheets/4/worklogs/${encodeURIComponent(wlId)}`);
-      if (!r.ok) throw 0;
-      const j = await r.json();
+      const j = await fetchTempoWorklog(wlId);
+      if (j){
+        let key = (j?.issue?.key) || j?.issueKey || null;
+        let iid = (j?.issue?.id)  || j?.issueId   || null;
 
-      let key = (j?.issue?.key) || j?.issueKey || null;
-      let iid = (j?.issue?.id)  || j?.issueId   || null;
-
-      if (!key && iid){
-        const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`);
-        if (rx.ok){
-          const jj = await rx.json();
-          key = (jj?.key) || (jj?.fields?.key) || null;
+        if (!key && iid){
+          const rx = await fetch(`/rest/api/2/issue/${encodeURIComponent(iid)}?fields=key`);
+          if (rx.ok){
+            const jj = await rx.json();
+            key = (jj?.key) || (jj?.fields?.key) || null;
+          }
+        }
+        if (key){
+          key = key.toUpperCase();
+          S.worklogKeyCache.set(wlId, key);
+          S.lastSeenIssueKey = key;
+          return key;
         }
       }
-
-      if (key){
-        key = key.toUpperCase();
-        S.worklogKeyCache.set(wlId, key);
-        S.lastSeenIssueKey = key;
-        return key;
-      }
-    }catch(e){ /* fail open */ }
+    }catch(e){}
 
     return null;
   }
@@ -167,19 +319,19 @@
   function sniffIssueKeyFromURL(url){
     if (!url) return;
 
-    // a) direct ?issueKey=… (create/update from issue view)
+    // direct ?issueKey=
     let key = null;
     const mQ = url.match(/[?&]issueKey=([^&#]+)/i);
     if (mQ) key = decodeURIComponent(mQ[1]);
 
-    // b) fallback: /issue/KEY or any KEY in the URL
+    // fallback: /issue/KEY or any KEY in URL
     if (!key){
       const m1 = url.match(/\/issue\/([A-Z][A-Z0-9]+-\d+)/i);
       key = (m1 && m1[1]) || (url.match(RX_KEY) || [])[0] || null;
     }
 
-    // c) NEW: remember worklogId so we can resolve later (Edit flow)
-    const mW = url.match(/\/rest\/tempo-timesheets\/\d+\/worklogs\/(\d+)/i);
+    // remember worklogId (with/without trailing slash)
+    const mW = url.match(/\/rest\/tempo-timesheets\/\d+\/worklogs\/(\d+)\/?$/i);
     if (mW){
       S.lastWorklogId = mW[1];
       (async () => {
@@ -277,13 +429,31 @@
     return host;
   }
 
-  function getCustomSelect(form){ return form?.querySelector("#custom-workattr-select") || null; }
-  function getWarnBox(form){ return form?.querySelector("#custom-workattr-warning") || null; }
+  const getCustomSelect = (form) => form?.querySelector("#custom-workattr-select") || null;
+  const getWarnBox     = (form) => form?.querySelector("#custom-workattr-warning") || null;
 
   function getSubmitBtn(form) {
-    return form?.querySelector('[name="submitWorklogButton"]')
-        || [...(form?.querySelectorAll('button') || [])]
-           .find(b => /^(log time|update)$/i.test((b.textContent || '').trim()));
+    // Try several modern & legacy selectors, then fall back to text match
+    const prioritySelectors = [
+      'button[name="submitWorklogButton"]',
+      'button[type="submit"]',
+      'button[id*="submit"][id*="worklog"]',
+      'button[data-test-id*="submit"]',
+      'button[data-testid*="submit"]',
+      'button[data-test-id*="log"]',
+      'button[data-testid*="log"]'
+    ];
+    for (const sel of prioritySelectors){
+      const b = form.querySelector(sel);
+      if (b) return b;
+    }
+    const byText = [...(form.querySelectorAll('button, [role="button"]') || [])]
+      .find(b => /log time|update/i.test((b.textContent || '').trim()));
+    if (byText) return byText;
+
+    // last resort: primary-looking button
+    return [...(form.querySelectorAll('button') || [])]
+      .reverse().find(b => /primary|aui-button-primary/i.test(b.className)) || null;
   }
 
   function fillSelect(select, options, preselect) {
@@ -356,6 +526,20 @@
   }
 
   /* ---------- Gate (warning + disable) ---------- */
+  function enforceDisabled(btn, block){
+    if (!btn) return;
+    btn.disabled = !!block;
+    btn.setAttribute("data-state", block ? "not-active" : "active");
+    btn.setAttribute("aria-disabled", String(!!block));
+    btn.classList.toggle("workattr-disabled-btn", !!block);
+    // Re-enforce shortly after Tempo re-renders
+    setTimeout(() => {
+      btn.disabled = !!block;
+      btn.setAttribute("aria-disabled", String(!!block));
+      btn.classList.toggle("workattr-disabled-btn", !!block);
+    }, 80);
+  }
+
   async function applyGate(form) {
     if (!form) return;
 
@@ -365,7 +549,7 @@
       form.querySelector("#custom-workattr-host")?.remove();
       const warnBox = getWarnBox(form);
       if (warnBox) warnBox.style.display = "none";
-      const btn = getSubmitBtn(form); if (btn) { btn.disabled = false; btn.classList.remove("workattr-disabled-btn"); }
+      enforceDisabled(getSubmitBtn(form), false);
       return;
     }
 
@@ -379,17 +563,10 @@
       const { isParent, hasAC } = await getIssueMeta(key);
       showWarn = isParent && !hasAC;
     }
-
     if (warnBox) warnBox.style.display = showWarn ? "block" : "none";
 
-    const btn = getSubmitBtn(form);
-    if (btn) {
-      const block = showWarn || !hasTask;
-      btn.disabled = !!block;
-      btn.setAttribute("data-state", block ? "not-active" : "active");
-      btn.setAttribute("aria-disabled", String(!!block));
-      btn.classList.toggle("workattr-disabled-btn", !!block);
-    }
+    // Disable when warning is visible OR no Task selected
+    enforceDisabled(getSubmitBtn(form), (showWarn || !hasTask));
   }
 
   /* ---------- Main loader ---------- */
@@ -413,7 +590,7 @@
         form.querySelector("#custom-workattr-host")?.remove();
         const warnBox = getWarnBox(form);
         if (warnBox) warnBox.style.display = "none";
-        const btn = getSubmitBtn(form); if (btn) { btn.disabled = false; btn.classList.remove("workattr-disabled-btn"); }
+        enforceDisabled(getSubmitBtn(form), false);
         return;
       }
 
@@ -430,10 +607,14 @@
 
       if (!select.__workattrBound) {
         select.__workattrBound = true;
-        select.addEventListener("change", () => {
-          S.selection = select.value || "";
-          applyGate(form);
-        });
+        select.addEventListener("change", () => { S.selection = select.value || ""; applyGate(form); });
+      }
+
+      // Re-apply gate on any changes inside the form (issue picker changes, etc.)
+      if (!form.__gateBound){
+        form.__gateBound = true;
+        form.addEventListener("change", () => applyGate(form));
+        form.addEventListener("input",  () => applyGate(form));
       }
 
       await applyGate(form);
@@ -552,7 +733,7 @@
     onceStyle();
     wireNetwork();
     wireObservers();
-    log("Ready (v6.6)");
+    log("Ready (v6.7)");
   }
 
   if (document.readyState === "loading") {
