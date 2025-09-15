@@ -10,67 +10,57 @@
 </font>
 
 <style>
-#announcement-banner { background-color:#9fd9b4; }
-
-/* helper class used by the script */
-.workattr-hide-native{ display:none !important; }
-.workattr-disabled-btn{ pointer-events:none !important; opacity:.6 !important; }
+#announcement-banner{background-color:#9fd9b4;}
+/* helper classes */
+.workattr-hide-native{display:none!important;}
+.workattr-disabled-btn{pointer-events:none!important;opacity:.6!important;}
 </style>
 
-<!-- ===== PROD legacy banner behaviors (safely wrapped) ===== -->
+<!-- ===== PROD legacy banner behaviors ===== -->
 <script type="text/javascript">
 (function(){
-  const $ = (window.AJS && AJS.$) ? AJS.$ : (window.jQuery || window.$);
-  if (!$) { return; }
+  const $=(window.AJS&&AJS.$)?AJS.$:(window.jQuery||window.$);
+  if(!$){return;}
 
   function removeIssueType(){
     try{
-      const HIDE = new Set([
-        "Onboard Entity User","Onboard Platform User","Defect","Feedback",
-        "Epic","Story","Task","Bug"
-      ]);
-      $(".aui-list-item-link").filter(function(){
-        return HIDE.has($(this).text().trim());
-      }).parent().hide();
+      const HIDE=new Set(["Onboard Entity User","Onboard Platform User","Defect","Feedback","Epic","Story","Task","Bug"]);
+      $(".aui-list-item-link").filter(function(){return HIDE.has($(this).text().trim());}).parent().hide();
     }catch(e){}
   }
 
   function removeUnwantedIssueTypes(){
     try{
-      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType", removeIssueType);
-      $("#issuetype-field")
-        .off(".removeIssueType")
-        .on("keyup.removeIssueType", removeIssueType)
-        .on("click.removeIssueType", () => setTimeout(removeIssueType,1));
-      $("#project").off("change.removeIssueType").on("change.removeIssueType", () => {
-        setTimeout(() => {
-          if (typeof window.findIssueType === "function") { window.findIssueType(); }
-          else { removeIssueType(); }
-        }, 1000);
+      $("span.drop-menu").off("click.removeIssueType").on("click.removeIssueType",removeIssueType);
+      $("#issuetype-field").off(".removeIssueType")
+        .on("keyup.removeIssueType",removeIssueType)
+        .on("click.removeIssueType",()=>setTimeout(removeIssueType,1));
+      $("#project").off("change.removeIssueType").on("change.removeIssueType",()=>{
+        setTimeout(()=>{ if(typeof window.findIssueType==="function"){window.findIssueType();} else {removeIssueType();} },1000);
       });
     }catch(e){}
   }
 
   function overwriteNewDemandNames(){
     try{
-      const url = String(window.location.href);
-      if (url.includes("&demandnew=true")){ removeUnwantedIssueTypes(); }
-      if (url.includes("&demandcustomized=true")){
-        const hdr = $(".aui-page-header-inner").get(0);
-        if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+      const url=String(window.location.href);
+      if(url.includes("&demandnew=true")){removeUnwantedIssueTypes();}
+      if(url.includes("&demandcustomized=true")){
+        const hdr=$(".aui-page-header-inner").get(0);
+        if(hdr&&hdr.innerHTML){hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand");}
         $('label[for="issuetype-field"]').text("Demand Type");
         $('label[for="issue-create-issue-type"]').text("Demand Type");
         $('label[for="project-field"]').parent().hide();
         $('label[for="issue-create-project-name"]').parent().hide();
-      } else if (url.includes("CreateIssue.jspa")){
-        const $projRow = $('label[for="issue-create-project-name"]').parent();
-        const projectName = $projRow.children().eq(1).text();
-        if (projectName === "Demand Management" || projectName === "Demand Management UAT"){
-          const $typeRow = $('label[for="issue-create-issue-type"]').parent();
-          const issueType = $typeRow.children().eq(2).text();
-          if (issueType === "Service Delivery Demand" || issueType === "Solution Delivery Demand"){
-            const hdr = $(".aui-page-header-inner").get(0);
-            if (hdr && hdr.innerHTML) { hdr.innerHTML = hdr.innerHTML.replace("Create Issue","Create Demand"); }
+      }else if(url.includes("CreateIssue.jspa")){
+        const $projRow=$('label[for="issue-create-project-name"]').parent();
+        const projectName=$projRow.children().eq(1).text();
+        if(projectName==="Demand Management"||projectName==="Demand Management UAT"){
+          const $typeRow=$('label[for="issue-create-issue-type"]').parent();
+          const issueType=$typeRow.children().eq(2).text();
+          if(issueType==="Service Delivery Demand"||issueType==="Solution Delivery Demand"){
+            const hdr=$(".aui-page-header-inner").get(0);
+            if(hdr&&hdr.innerHTML){hdr.innerHTML=hdr.innerHTML.replace("Create Issue","Create Demand");}
             $projRow.hide();
             $('label[for="issue-create-issue-type"]').text("Demand Type");
           }
@@ -79,33 +69,32 @@
     }catch(e){}
   }
 
-  function addCSSRule(sheet, selector, rules, index){
+  function addCSSRule(sheet,selector,rules,index){
     try{
-      if (!sheet) return;
-      if ("insertRule" in sheet) { sheet.insertRule(`${selector}{${rules}}`, index); }
-      else if ("addRule" in sheet) { sheet.addRule(selector, rules, index); }
+      if(!sheet)return;
+      if("insertRule" in sheet){sheet.insertRule(`${selector}{${rules}}`,index);}
+      else if("addRule" in sheet){sheet.addRule(selector,rules,index);}
     }catch(e){}
   }
 
   function hidePriority(){
     try{
-      const p = window.location.pathname || "";
-      const qs = window.location.search || "";
-      const match = p.includes("RapidBoard.jspa") &&
-        (/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
-      if (match){
-        const sheet = (document.styleSheets && document.styleSheets[0]) || null;
-        addCSSRule(sheet, ".ghx-priority", "display: none;", (sheet?.cssRules?.length || 0));
+      const p=window.location.pathname||"";
+      const qs=window.location.search||"";
+      const match=p.includes("RapidBoard.jspa")&&(/projectKey=(DM|DMUAT|DMSTAGE|KDMSTAGE|KDM|KDMUAT)(&|$)/.test(qs));
+      if(match){
+        const sheet=(document.styleSheets&&document.styleSheets[0])||null;
+        addCSSRule(sheet,".ghx-priority","display: none;",(sheet?.cssRules?.length||0));
       }
     }catch(e){}
   }
 
   function replaceTAT(){
     try{
-      if (window.JIRA && JIRA.ViewIssueTabs){
+      if(window.JIRA&&JIRA.ViewIssueTabs){
         JIRA.ViewIssueTabs.onTabReady(function(){
-          const ttsSLA = $("#tts-sla-panel_heading");
-          if (ttsSLA.length && !(ttsSLA.html() || "").includes("TAT Panel")){
+          const ttsSLA=$("#tts-sla-panel_heading");
+          if(ttsSLA.length&&!(ttsSLA.html()||"").includes("TAT Panel")){
             ttsSLA.find(".toggle-title").last().text("TAT Panel");
             ttsSLA.append("<style>.tts-sla-box__sla-prefix{visibility:hidden}.tts-sla-box__sla-prefix:before{content:'TAT';visibility:visible;position:absolute}</style>");
           }
@@ -115,61 +104,57 @@
   }
 
   replaceTAT();
-  $(window).on("load", function(){
-    overwriteNewDemandNames();
-    hidePriority();
-  });
+  $(window).on("load",function(){overwriteNewDemandNames();hidePriority();});
 })();
 </script>
 
-<!-- ===== Tempo Work Attribute Helper — Core v6.1 (dialog-scoped + robust native-hide) ===== -->
+<!-- ===== Tempo Work Attribute Helper — Core v6.1.1 (hotfix: selector) ===== -->
 <script>
-(() => {
+(()=>{
+
   /* ---------- Config ---------- */
-  const ATTR_KEY       = "_Task_";  // PROD Tempo attribute key (IMPORTANT)
+  const ATTR_KEY       = "_Task_";   // PROD attribute key
   const NATIVE_LABEL   = "Task";
-  const CUSTOM_LABEL   = "Task";    // show as “Task”
+  const CUSTOM_LABEL   = "Task";
   const JSONP_ENDPOINT = "/rest/scriptrunner/latest/custom/tempoWorkType";
   const AC_FIELD       = "customfield_17447";
   const AC_WARN_TEXT   =
-    'Log Time is disabled since Activity Code is not yet available. ' +
+    'Log Time is disabled since Activity Code is not yet available. '+
     'Please select your Domain BAU demand to log it temporarily to BAU.';
   const EXEMPT_ISSUES  = new Set([
     "DM-50267","DM-50235","DM-50236","DM-50237","DM-50238","DM-50239","DM-50240",
     "DM-50241","DM-47398","DM-50242","DM-50243","DM-50234","DM-50233","DM-50244",
     "DM-50245","DM-50246","DM-47406","DM-47407","DM-47408","DM-47409","DM-47410",
     "DM-47484","DM-47391","DM-47392","DM-47394","DM-47395","DM-47671","DM-47396",
-    "DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404",
-    "DM-47405"
+    "DM-47397","DM-47399","DM-47400","DM-47401","DM-47402","DM-47403","DM-47404","DM-47405"
   ]);
-  const KTAXA_GROUP_NAME   = "DM-KTAXA";
-  const OBSERVE_DEBOUNCE_MS= 120;
-  const SENTINEL_MS        = 2000;
+  const KTAXA_GROUP_NAME="DM-KTAXA";
+  const OBSERVE_DEBOUNCE_MS=120;
+  const SENTINEL_MS=2000;
 
   /* ---------- State ---------- */
-  const S = {
-    ktaxa:null, lastIssueKey:null, lastSeenIssueKey:null, lastOptionsKey:null,
-    selection:"", fetching:new Map(), acCache:new Map(), typeCache:new Map(),
-    wiredXHR:false, wiredFetch:false, bodyMO:null, formMO:null,
-    formMOStarted:false, debounceTimer:null, sentinelTimer:null
+  const S={
+    ktaxa:null,lastIssueKey:null,lastSeenIssueKey:null,lastOptionsKey:null,
+    selection:"",fetching:new Map(),acCache:new Map(),typeCache:new Map(),
+    wiredXHR:false,wiredFetch:false,bodyMO:null,formMO:null,
+    formMOStarted:false,debounceTimer:null,sentinelTimer:null
   };
 
-  const log  = (...a)=>console.log("%c[WorkAttr]","color:#2aa",...a);
-  const warn = (...a)=>console.warn("%c[WorkAttr]","color:#d80",...a);
+  const log=(...a)=>console.log("%c[WorkAttr]","color:#2aa",...a);
+  const warn=(...a)=>console.warn("%c[WorkAttr]","color:#d80",...a);
   const RX_KEY=/\b[A-Z][A-Z0-9]+-\d+\b/;
-  const isDM = k=>/^DM-\d+$/i.test(k||"");
-
-  const getForm = ()=>document.querySelector("#worklogForm");
+  const isDM=k=>/^DM-\d+$/i.test(k||"");
+  const getForm=()=>document.querySelector("#worklogForm");
 
   async function isKTAXA(){
-    if (S.ktaxa!==null) return S.ktaxa;
+    if(S.ktaxa!==null) return S.ktaxa;
     try{
       const r=await fetch("/rest/api/2/myself?expand=groups");
       if(!r.ok) throw 0;
       const me=await r.json();
       const names=(me?.groups?.items||[]).map(g=>(g?.name||"").toUpperCase());
       S.ktaxa=names.includes(KTAXA_GROUP_NAME.toUpperCase());
-    }catch{ S.ktaxa=false; }
+    }catch{S.ktaxa=false;}
     return S.ktaxa;
   }
 
@@ -212,23 +197,26 @@
     }
   }
 
-  /* ---------- Native Task row detection & hiding ---------- */
+  /* ---------- Native Task row: robust find/hide ---------- */
+  function safeMatches(node, selector){
+    try{ return !!(node.matches && node.matches(selector)); }catch{ return false; }
+  }
+
   function closestRow(el, form){
     if(!el) return null;
     let node=el;
+    // Use safe selector (no invalid .css-*)
+    const ROW_SEL='.sc-bKhNmF, .aui-field, [class^="css-"], [role="group"]';
     for(let i=0;i<5 && node && node!==form;i++){
-      // stop at our host if found
-      if(node.id==="custom-workattr-host") return null;
-      if(node.matches?.('.sc-bKhNmF, .aui-field, .css-*, [role="group"]')) return node;
+      if(node.id==="custom-workattr-host") return null; // never treat our host as native row
+      if(safeMatches(node, ROW_SEL) || node.getAttribute?.('role')==='group') return node;
       node=node.parentElement;
     }
-    // fallback: return parent
     return el.parentElement;
   }
 
   function hideNativeTaskRows(form){
     if(!form) return;
-
     // 1) by label text
     for(const lab of [...form.querySelectorAll('label')]){
       const txt=(lab.textContent||'').trim().toLowerCase();
@@ -237,13 +225,8 @@
         for(let i=0;i<4 && r && r!==form;i++){ r.classList.add('workattr-hide-native'); r=r.parentElement; }
       }
     }
-
-    // 2) by id/name/aria-label of the native control
-    const q = [
-      `#${CSS.escape(ATTR_KEY)}`,
-      `[name="${ATTR_KEY}"]`,
-      `[aria-label="${NATIVE_LABEL}"]`
-    ].join(',');
+    // 2) by native control id/name/aria-label
+    const q=[`#${CSS.escape(ATTR_KEY)}`,`[name="${ATTR_KEY}"]`,`[aria-label="${NATIVE_LABEL}"]`].join(',');
     for(const ctrl of [...form.querySelectorAll(q)]){
       if(ctrl.closest('#custom-workattr-host')) continue;
       let r=closestRow(ctrl,form)||ctrl;
@@ -251,25 +234,20 @@
     }
   }
 
-  function findNativeTaskRow(form){
-    // try to find a surviving native row (if any remained)
-    let lab=form.querySelector(`label[for="${ATTR_KEY}"]`);
-    if(!lab) lab=[...form.querySelectorAll("label")]
-      .find(l=>(l.textContent||"").trim().toLowerCase()===NATIVE_LABEL.toLowerCase() && !l.closest('#custom-workattr-host'));
-    return closestRow(lab,form);
-  }
-
   function ensureCustomHost(form){
     if(!form) return null;
     let host=form.querySelector("#custom-workattr-host");
     if(host) return host;
 
-    // hide all native versions defensively
     hideNativeTaskRows(form);
 
-    // place our host after the (now hidden) native row if we can locate it,
-    // otherwise append near the end of the form
-    const row=findNativeTaskRow(form);
+    const row=(()=>{ // attempt to re-find a native row anchor
+      let lab=form.querySelector(`label[for="${ATTR_KEY}"]`);
+      if(!lab) lab=[...form.querySelectorAll("label")]
+        .find(l=>(l.textContent||"").trim().toLowerCase()===NATIVE_LABEL.toLowerCase() && !l.closest('#custom-workattr-host'));
+      return closestRow(lab,form);
+    })();
+
     host=document.createElement("div");
     host.id="custom-workattr-host";
     host.className="custom-workattr-host";
@@ -280,22 +258,21 @@
       </select>
       <div id="custom-workattr-warning" class="custom-workattr-warning" style="display:none;">${AC_WARN_TEXT}</div>
     `;
-    if(row?.parentElement){ row.parentElement.insertBefore(host, row.nextSibling); }
+    if(row?.parentElement){ row.parentElement.insertBefore(host,row.nextSibling); }
     else{ form.appendChild(host); }
     return host;
   }
 
-  const getCustomSelect = form => form?.querySelector("#custom-workattr-select")||null;
-  const getWarnBox     = form => form?.querySelector("#custom-workattr-warning")||null;
+  const getCustomSelect=form=>form?.querySelector("#custom-workattr-select")||null;
+  const getWarnBox=form=>form?.querySelector("#custom-workattr-warning")||null;
 
-  /* ---------- Button (dialog-scoped) ---------- */
+  /* ---------- Dialog-scoped button ---------- */
   function getDialogRoot(form){
-    const anchor = form?.querySelector('#custom-workattr-host') || form || document.body;
+    const anchor=form?.querySelector('#custom-workattr-host')||form||document.body;
     return anchor.closest('[role="dialog"], .aui-dialog2, [data-testid*="dialog"], [data-test-id*="dialog"]');
   }
   function getSubmitBtn(form){
-    const dlg=getDialogRoot(form);
-    if(!dlg) return null;
+    const dlg=getDialogRoot(form); if(!dlg) return null;
     const c=[...dlg.querySelectorAll('button,[role="button"]')];
     return c.find(b=>{
       const t=(b.textContent||'').trim();
@@ -307,11 +284,11 @@
     const btn=getSubmitBtn(form);
     if(btn){
       btn.disabled=!!blocked;
-      btn.setAttribute("data-state", blocked?"not-active":"active");
-      btn.setAttribute("aria-disabled", String(!!blocked));
-      btn.classList.toggle("workattr-disabled-btn", !!blocked);
+      btn.setAttribute("data-state",blocked?"not-active":"active");
+      btn.setAttribute("aria-disabled",String(!!blocked));
+      btn.classList.toggle("workattr-disabled-btn",!!blocked);
     }
-    if(S.sentinelTimer){ clearInterval(S.sentinelTimer); S.sentinelTimer=null; }
+    if(S.sentinelTimer){clearInterval(S.sentinelTimer);S.sentinelTimer=null;}
     if(blocked){
       const start=Date.now();
       S.sentinelTimer=setInterval(()=>{
@@ -321,12 +298,12 @@
         b.setAttribute("data-state","not-active");
         b.setAttribute("aria-disabled","true");
         b.classList.add("workattr-disabled-btn");
-        if(Date.now()-start>SENTINEL_MS){ clearInterval(S.sentinelTimer); S.sentinelTimer=null; }
+        if(Date.now()-start>SENTINEL_MS){clearInterval(S.sentinelTimer);S.sentinelTimer=null;}
       },120);
     }
   }
 
-  function fillSelect(select, options, preselect){
+  function fillSelect(select,options,preselect){
     const keep=new Set();
     select.innerHTML=`<option value="">Select an option...</option>`;
     for(const opt of options){
@@ -345,24 +322,23 @@
     return new Promise((resolve,reject)=>{
       const cb="tempoWorkAttrCB_"+Math.random().toString(36).slice(2);
       const sep=url.includes("?")?"&":"?";
-      const src=`${url}${sep}callback=${cb}`;
       const s=document.createElement("script");
-      let done=false;
-      window[cb]=(data)=>{ if(done) return; done=true; cleanup(); resolve(data); };
-      function cleanup(){ try{delete window[cb]}catch{} s.remove(); }
-      s.onerror=()=>{ if(done) return; done=true; cleanup(); reject(new Error("JSONP failed")); };
-      s.src=src; document.body.appendChild(s);
+      window[cb]=(data)=>{cleanup();resolve(data);};
+      function cleanup(){try{delete window[cb]}catch{} s.remove();}
+      s.onerror=()=>{cleanup();reject(new Error("JSONP failed"));};
+      s.src=`${url}${sep}callback=${cb}`;
+      document.body.appendChild(s);
     });
   }
 
   async function fetchOptionsFor(issueKey){
     if(!issueKey) return [];
     if(S.fetching.has(issueKey)) return S.fetching.get(issueKey);
-    const p=(async ()=>{
+    const p=(async()=>{
       const url=`${JSONP_ENDPOINT}?issueKey=${encodeURIComponent(issueKey)}`;
       const data=await jsonp(url).catch(()=>({}));
       const list=Array.isArray(data?.values)?data.values:[];
-      return list.map(v=>({key:v.key, value:v.value}));
+      return list.map(v=>({key:v.key,value:v.value}));
     })();
     S.fetching.set(issueKey,p);
     return p;
@@ -428,14 +404,13 @@
       }
     }
 
-    if(warnBox) warnBox.style.display = showWarn ? "block" : "none";
+    if(warnBox) warnBox.style.display=showWarn?"block":"none";
     setSubmitBlocked(form, showWarn || !hasTask);
   }
 
   /* ---------- Main loader ---------- */
   async function loadForCurrentForm(){
-    const form=getForm();
-    if(!form) return;
+    const form=getForm(); if(!form) return;
     if(S.debounceTimer) clearTimeout(S.debounceTimer);
 
     S.debounceTimer=setTimeout(async ()=>{
@@ -444,25 +419,23 @@
 
       if(S.lastIssueKey!==issueKey){ S.lastIssueKey=issueKey; S.selection=""; }
 
-      const host=ensureCustomHost(form);
-      if(!host) return;
+      const host=ensureCustomHost(form); if(!host) return;
 
       const select=getCustomSelect(form);
       if(S.lastOptionsKey!==issueKey){
         const options=await fetchOptionsFor(issueKey).catch(()=>[]);
         S.lastOptionsKey=issueKey;
-        fillSelect(select, options, S.selection);
+        fillSelect(select,options,S.selection);
       }
 
       if(!select.__workattrBound){
         select.__workattrBound=true;
-        select.addEventListener("change", ()=>{ S.selection=select.value||""; applyGate(form); });
+        select.addEventListener("change",()=>{ S.selection=select.value||""; applyGate(form); });
       }
 
       await applyGate(form);
-      // small re-check after React micro-renders
       setTimeout(()=>applyGate(form),80);
-    }, OBSERVE_DEBOUNCE_MS);
+    },OBSERVE_DEBOUNCE_MS);
   }
 
   /* ---------- Observers ---------- */
@@ -484,9 +457,9 @@
     loadForCurrentForm();
   }
 
-  /* ---------- Injection guards (avoid SearchParams 500) ---------- */
+  /* ---------- Injection guards ---------- */
   function looksLikeCreateUpdate(obj){
-    if(!obj || typeof obj!=="object") return false;
+    if(!obj||typeof obj!=="object") return false;
     if("started" in obj) return true;
     if("timeSpentSeconds" in obj) return true;
     if("originTaskId" in obj) return true;
@@ -502,7 +475,7 @@
       const _open=XMLHttpRequest.prototype.open;
       const _send=XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.open=function(method,url,...rest){
-        try{ sniffIssueKeyFromURL(url); }catch{}
+        try{sniffIssueKeyFromURL(url);}catch{}
         this.__url=url||""; this.__method=(method||"").toUpperCase();
         return _open.call(this,method,url,...rest);
       };
@@ -510,19 +483,19 @@
         try{
           if(S.ktaxa===true) return _send.call(this,body);
           const isMut=/POST|PUT/.test(this.__method||"");
-          if(!isMut || !body || typeof body!=="string"){ return _send.call(this,body); }
-          let obj; try{ obj=JSON.parse(body); }catch{ obj=null; }
+          if(!isMut || !body || typeof body!=="string"){return _send.call(this,body);}
+          let obj; try{obj=JSON.parse(body);}catch{obj=null;}
           if(looksLikeCreateUpdate(obj)){
-            const form=getForm(), sel=form && getCustomSelect(form);
-            const chosen=(sel && sel.value) || S.selection || "";
+            const form=getForm(); const sel=form&&getCustomSelect(form);
+            const chosen=(sel&&sel.value)||S.selection||"";
             if(chosen){
               obj.attributes=obj.attributes||{};
-              obj.attributes[ATTR_KEY]=chosen;          // inject by key
+              obj.attributes[ATTR_KEY]=chosen;
               body=JSON.stringify(obj);
-              log("✅ Injected into XHR", {[ATTR_KEY]:chosen});
+              log("✅ Injected into XHR",{[ATTR_KEY]:chosen});
             }
           }
-        }catch(e){ warn("XHR inject skipped:",e); }
+        }catch(e){warn("XHR inject skipped:",e);}
         return _send.call(this,body);
       };
     }
@@ -536,26 +509,27 @@
           sniffIssueKeyFromURL(url);
           if(S.ktaxa===true) return _fetch(input,init);
           if(/POST|PUT/.test(meth) && init?.body && typeof init.body==="string"){
-            let obj; try{ obj=JSON.parse(init.body); }catch{ obj=null; }
+            let obj; try{obj=JSON.parse(init.body);}catch{obj=null;}
             if(looksLikeCreateUpdate(obj)){
-              const form=getForm(), sel=form && getCustomSelect(form);
-              const chosen=(sel && sel.value) || S.selection || "";
+              const form=getForm(); const sel=form&&getCustomSelect(form);
+              const chosen=(sel&&sel.value)||S.selection||"";
               if(chosen){
                 obj.attributes=obj.attributes||{};
                 obj.attributes[ATTR_KEY]=chosen;
                 init={...init, body:JSON.stringify(obj)};
-                log("✅ Injected into fetch", {[ATTR_KEY]:chosen});
+                log("✅ Injected into fetch",{[ATTR_KEY]:chosen});
               }
             }
           }
-        }catch(e){ warn("fetch inject skipped:",e); }
+        }catch(e){warn("fetch inject skipped:",e);}
         return _fetch(input,init);
       };
     }
   }
 
   /* ---------- Boot ---------- */
-  function boot(){ wireNetwork(); wireObservers(); log("Ready (v6.1)"); }
-  if(document.readyState==="loading"){ document.addEventListener("DOMContentLoaded",boot); } else { boot(); }
+  function boot(){ wireNetwork(); wireObservers(); log("Ready (v6.1.1)"); }
+  if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",boot);} else {boot();}
+
 })();
 </script>
